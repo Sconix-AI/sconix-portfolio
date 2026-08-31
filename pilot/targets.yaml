@@ -1,0 +1,6 @@
+# The fleet the pilot watches. One block per deployed app.
+targets:
+  - name: relnotes
+    url: https://relnotes.204-168-172-115.sslip.io
+  - name: skillforge
+    url: https://skillforge.204-168-172-115.sslip.io

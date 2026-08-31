@@ -1,0 +1,21 @@
+version: "3"
+
+tasks:
+  setup:
+    desc: install deps into a local venv
+    cmds:
+      - uv sync
+
+  pilot:
+    desc: "probe the fleet and have the agent assess it (pass -- <name> for one)"
+    cmds:
+      - uv run python -m pilot.run {{.CLI_ARGS}}
+
+  test:
+    cmds:
+      - uv run pytest
+
+  lint:
+    cmds:
+      - uv run ruff check .
+      - uv run ruff format --check .
