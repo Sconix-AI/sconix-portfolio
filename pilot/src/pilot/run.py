@@ -28,7 +28,7 @@ from sconixapp.db import dispose_engine, get_engine, get_session, init_engine
 from sqlmodel import SQLModel
 
 from pilot import act
-from pilot.act import make_guard, restart_app
+from pilot.act import RESTART, make_guard, restart_app
 from pilot.audit import record
 from pilot.memory import (
     ACTED,
@@ -43,13 +43,13 @@ from pilot.memory import (
     summarize,
     transition,
 )
-from pilot.principal import PILOT, Principal
+from pilot.principal import PILOT, Principal, label, may_touch
 from pilot.probe import Probe, probe
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGETS = ROOT / "targets.yaml"
 DB_URL = f"sqlite+aiosqlite:///{ROOT / 'pilot.db'}"
-PRINCIPAL = str(PILOT)  # run_agent still wants a user_id string; see PILOT_REQUIREMENTS.md
+PRINCIPAL = label(PILOT)  # run_agent still wants a user_id string; see PILOT_REQUIREMENTS.md R1
 
 _ASSESS_SYSTEM = """You are a release pilot watching a small fleet of deployed web apps.
 You are given one app's raw health probe and its recent incident history.
@@ -133,7 +133,7 @@ async def tick(
     principal: Principal = PILOT,
 ) -> list[dict]:
     """One full pass: probe → assess → move each incident through its lifecycle."""
-    who = str(principal)
+    who = label(principal)
     probes = await asyncio.gather(*(probe(t["name"], t["url"]) for t in targets))
     by_name = {t["name"]: t for t in targets}
 
@@ -180,19 +180,19 @@ async def tick(
             session,
             allow=fixable,
             run_result=run_result,
-            principal=who,
+            principal=principal,
             incidents=incidents,
         )
         tool = guarded_tool(_restart_and_record, guard=guard)
         for obs, verdict, _ in assessed:
-            if obs.name not in fixable or not principal.may_touch(obs.name):
+            if obs.name not in fixable or not may_touch(principal, obs.name):
                 continue
             inc = await _reload(session, incidents[obs.name])
             await transition(session, inc, PROPOSED)
             fctx = summarize(await history(session, obs.name))
             said[obs.name] = await fix(client, session, obs, verdict, fctx, tool)
             await _settle(session, incidents[obs.name], run_result.get(obs.name), by_name[obs.name])
-        restarted = {n for n, r in run_result.items() if r == "allowed"}
+        restarted = {n for n, r in run_result.items() if r == "allow"}
 
     await session.commit()
     out_rows = []
@@ -240,26 +240,41 @@ async def _open_by_target(session: Any, target: str) -> Any:
     )
 
 
+async def _verify_recovered(target: dict, verification: Any = None) -> bool:
+    """Re-probe per the action's `Verification`: up to N attempts, spaced, with a
+    wall-clock cap. True on the first healthy probe."""
+    v = verification or RESTART.verification
+    started = time.monotonic()
+    for attempt in range(v.attempts):
+        if attempt:
+            await asyncio.sleep(v.interval_seconds)
+        if time.monotonic() - started > v.within_seconds:
+            return False
+        confirm = await probe(target["name"], target["url"])
+        if confirm.healthz_status == 200 and (
+            not confirm.readyz_body or confirm.readyz_body.get("status") == "ok"
+        ):
+            return True
+    return False
+
+
 async def _settle(session: Any, incident_id: int, outcome: str | None, target: dict) -> None:
     """After the fix agent ran: move the incident to acted / escalated, then
-    verify recovery with one confirming probe."""
+    verify recovery (retry/grace-aware) before resolving."""
     inc = await _reload(session, incident_id)
     if inc is None or inc.state in (RESOLVED, VERIFIED):
         return
 
-    if outcome == "allowed":
+    if outcome == "allow":
         await transition(session, inc, APPROVED)
         await transition(session, inc, ACTED)
-        confirm = await probe(target["name"], target["url"])
-        healthy = confirm.healthz_status == 200 and (
-            not confirm.readyz_body or confirm.readyz_body.get("status") == "ok"
-        )
-        if healthy:
+        if await _verify_recovered(target):
             await transition(session, inc, VERIFIED, last_severity="ok")
             await transition(session, inc, RESOLVED, resolution="recovered after action")
         # else: stays ACTED; next tick's observe() rolls it back to DIAGNOSED
-    elif outcome and outcome.startswith("denied"):
-        await transition(session, inc, ESCALATED, resolution=outcome)
+    elif outcome == "deny":
+        deny_row = await _last_deny_reason(session, incident_id)
+        await transition(session, inc, ESCALATED, resolution=f"denied: {deny_row}")
     else:
         await transition(
             session,
@@ -267,6 +282,26 @@ async def _settle(session: Any, incident_id: int, outcome: str | None, target: d
             ESCALATED,
             resolution="agent proposed no safe action",
         )
+
+
+async def _last_deny_reason(session: Any, incident_id: int) -> str:
+    from sqlmodel import select
+
+    from pilot.audit import Action
+
+    row = (
+        (
+            await session.execute(
+                select(Action)
+                .where(Action.incident_id == incident_id, Action.decision == "deny")
+                .order_by(Action.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    return row.reason if row else "policy denied the action"
 
 
 async def _client() -> Any:

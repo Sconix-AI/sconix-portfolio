@@ -45,8 +45,9 @@ async def test_gate_denies_target_not_in_allow_set(session) -> None:
     assert calls == []
 
     rows = await _rows(session)
-    assert [r.decision for r in rows] == ["denied"]
+    assert [r.decision for r in rows] == ["deny"]
     assert rows[0].target == "relnotes" and rows[0].tool == "restart_app"
+    assert rows[0].principal == "ops-agent:pilot"
 
 
 async def test_gate_allows_warn_or_down_target(session) -> None:
@@ -63,10 +64,10 @@ async def test_gate_allows_warn_or_down_target(session) -> None:
 
     res = await tool.call({"app": "skillforge"})
     assert res == "restarted skillforge" and calls == ["skillforge"]
-    assert run_result == {"skillforge": "allowed"}
+    assert run_result == {"skillforge": "allow"}
 
     rows = await _rows(session)
-    assert [r.decision for r in rows] == ["allowed"]
+    assert [r.decision for r in rows] == ["allow"]
     assert rows[0].reason.startswith("warn/down + --fix")
 
 
@@ -81,4 +82,4 @@ async def test_gate_denies_unknown_tool(session) -> None:
     res = await tool.call({"app": "skillforge"})
     assert res.startswith("BLOCKED:") and "no policy for tool" in res
     rows = await _rows(session)
-    assert rows[0].decision == "denied" and rows[0].tool == "delete_everything"
+    assert rows[0].decision == "deny" and rows[0].tool == "delete_everything"

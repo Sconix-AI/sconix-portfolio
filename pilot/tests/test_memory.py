@@ -22,6 +22,7 @@ from pilot.memory import (
     summarize,
     transition,
 )
+from pilot.principal import PILOT
 
 WHO = "ops-agent:pilot"
 
@@ -117,7 +118,7 @@ async def test_restart_cooldown_blocks_second_attempt(session) -> None:
         return guarded_tool(
             restart_app,
             guard=make_guard(
-                session, allow={"relnotes"}, run_result={}, cooldown_s=600, principal=WHO
+                session, allow={"relnotes"}, run_result={}, cooldown_s=600, principal=PILOT
             ),
         )
 
@@ -127,5 +128,5 @@ async def test_restart_cooldown_blocks_second_attempt(session) -> None:
     assert calls == ["relnotes"]
 
     rows = (await session.execute(select(Action).order_by(Action.id))).scalars().all()
-    assert [r.decision for r in rows] == ["allowed", "denied"]
-    assert all(r.principal == WHO for r in rows)
+    assert [r.decision for r in rows] == ["allow", "deny"]
+    assert all(r.principal == WHO for r in rows)  # label(PILOT)

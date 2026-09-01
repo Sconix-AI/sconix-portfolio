@@ -147,3 +147,33 @@ Still felt:
     help". → `pilot` backlog.
 15. **`_settle` re-probes once, immediately.** No grace period for a slow
     restart. A real app needs "verify within N seconds, M attempts". → slice 4.
+
+## Slice 3.8 — consume `sconixcore`
+
+Codex extracted the Phase 2 contracts (`sconixcore` 0.1.0); Pilot now imports
+them instead of keeping local copies:
+
+- **`pilot/principal.py`** is a thin adapter over `sconixcore.Principal`
+  (`kind ∈ {human, agent, service, ci}` + `role`). `PILOT` = agent/ops;
+  `label()` still yields `ops-agent:pilot` for audit rows, so no data churn.
+  `may_touch()` is now a free function (the core type has no method).
+- **`pilot/act.py`**: `restart_app` is described by a `sconixcore.ActionSpec`
+  (`RESTART`) — `risk=external-write`, `idempotent`, `approval=policy`,
+  `Verification(checks, within_seconds=30, attempts=3, interval_seconds=2)`,
+  `side_effects`, `preconditions`. The gate builds a `sconixcore.Decision`
+  (outcome + accountable principal + timestamp) per check; `Action.decision`
+  now stores the `DecisionOutcome` value (`allow` / `deny`), execution rows
+  stay `done` / `failed`.
+- **`run.py:_verify_recovered`** replaces the single re-probe with a retry loop
+  driven by `RESTART.verification` — **closes #15**.
+- 18 tests (adds `_verify_recovered` retry/give-up). `task demo` unchanged in
+  behaviour; audit trail now reads `allow → done → deny`.
+
+Pilot's policy (allow-set + cooldown) stays local, per the checkpoint — the
+reusable contract is the types, not the rule.
+
+Still felt:
+
+16. **`ActionSpec.argv` is a placeholder** (`("sx","restart","<app>")`); the real
+    argv comes from `_restart_cmd()` (per-target override). The spec and the
+    executor should share one source once `sconix.yaml` `commands` land.

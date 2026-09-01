@@ -1,39 +1,31 @@
-"""Who is acting, and under what authority.
+"""The acting principal — now a thin adapter over `sconixcore.Principal`.
 
-`run_agent` wants a `user_id` string; an unattended ops loop has no user. Pilot
-models the actor explicitly instead — a `Principal` with a kind, an id, the
-intent for this run, and the scope it may touch. Every incident and every action
-records the principal that caused it.
-
-This lives in `pilot` on purpose: it's the concrete shape Pilot needs, logged so
-Codex can extract the reusable model into Sconix (see PILOT_REQUIREMENTS.md).
+Pilot proved the shape (kind + role + intent + scope); Codex extracted it into
+`sconixcore` at Phase 2. This module keeps the `PILOT` default and the helpers
+Pilot needs on top: a stable audit label and a scope check.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Literal
+from sconixcore import Principal, PrincipalKind
 
-Kind = Literal["human", "coding-agent", "ops-agent", "ci"]
+__all__ = ["Principal", "PrincipalKind", "PILOT", "label", "may_touch"]
 
-
-@dataclass(frozen=True)
-class Principal:
-    kind: Kind
-    id: str
-    intent: str = ""
-    scope: tuple[str, ...] = field(default_factory=tuple)  # target names it may act on
-
-    def __str__(self) -> str:
-        return f"{self.kind}:{self.id}"
-
-    def may_touch(self, target: str) -> bool:
-        return not self.scope or target in self.scope
-
-
-# the default actor for `pilot watch` — an operational agent, no human in the loop
+# the unattended loop: an operational agent, no human in the loop
 PILOT = Principal(
-    kind="ops-agent",
+    kind=PrincipalKind.AGENT,
     id="pilot",
+    role="ops",
     intent="keep the fleet healthy",
 )
+
+
+def label(p: Principal) -> str:
+    """Stable string for audit rows — e.g. ``ops-agent:pilot``, ``human:yusuf``."""
+    if p.role:
+        return f"{p.role}-{p.kind.value}:{p.id}"
+    return f"{p.kind.value}:{p.id}"
+
+
+def may_touch(p: Principal, target: str) -> bool:
+    return not p.scope or target in p.scope

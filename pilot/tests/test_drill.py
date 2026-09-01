@@ -45,6 +45,21 @@ async def test_probe_follows_drill_state(server) -> None:
     assert healed.healthz_status == 200 and healed.readyz_body["status"] == "ok"
 
 
+async def test_verify_recovered_retries_then_gives_up(server) -> None:
+    from sconixcore import Verification
+
+    from pilot.run import _verify_recovered
+
+    target = {"name": "drill", "url": f"http://127.0.0.1:{server}"}
+    fast = Verification(checks=("healthz",), within_seconds=5, attempts=3, interval_seconds=0.01)
+
+    drill._poke(server, "healthy")
+    assert await _verify_recovered(target, fast) is True
+
+    drill._poke(server, "wedged")  # healthz 503 forever
+    assert await _verify_recovered(target, fast) is False
+
+
 async def test_restart_app_reports_a_failed_command(tmp_path) -> None:
     tf = tmp_path / "t.yaml"
     tf.write_text("targets:\n  - name: drill\n    url: http://x\n    restart: sh -c 'exit 3'\n")

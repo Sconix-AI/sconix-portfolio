@@ -41,9 +41,12 @@ detected → diagnosed → proposed → approved → acted → verified → reso
 - every `run_agent` call → an `AgentRun` row (cost/tokens); every proposal →
   an `Action` row (principal, decision, reason). Both in `pilot.db`.
 
-**Principal** (`pilot/principal.py`) — every incident and action records who
-caused it: `kind ∈ {human, coding-agent, ops-agent, ci}`, id, intent, scope.
-The unattended loop runs as `ops-agent:pilot`.
+**Built on `sconixcore`** (the platform's Phase 2 contracts): `Principal`
+(who caused it — the loop runs as agent/ops → `ops-agent:pilot`), `ActionSpec`
+(`restart_app`'s declared risk / approval / verification / side-effects),
+`Decision` (outcome + accountable principal, per gate check), `Verification`
+(the retry/grace re-probe). Pilot keeps only its own **policy** (allow-set +
+cooldown) local.
 
 `restart_app` is the only real side effect, and it cannot fire unless policy says so.
 
@@ -94,7 +97,8 @@ negative case: the agent reads it as an outage and declines to restart on its ow
 | 3 ✅ | unattended `watch` loop + incident memory + restart cooldown | (none — proved in pilot) |
 | 3.5 ✅ | drill harness + `task demo` — down→act→cooldown-deny, end to end | (none — pilot-only) |
 | 3.7 ✅ | incident **state machine** + **verify** step + **principal** on every incident/action + confidence | (none — logged in `PILOT_REQUIREMENTS.md` for Codex to extract) |
-| 4 | canary deploy + auto-rollback | `sx canary` / `sx rollback` — **blocked on Codex / `~/systems`** |
+| 3.8 ✅ | consume `sconixcore` (`Principal` / `ActionSpec` / `Decision` / `Verification`); retry-aware verify | (none — Codex's Phase 2 contracts, now a real consumer) |
+| 4 | canary deploy + auto-rollback | `sx canary` / `sx rollback` / `deploy --plan` — **Codex's Phase 3, in progress** |
 | 5 | public status page | an incident/status package |
 
 ## For the platform

@@ -1,8 +1,12 @@
-"""The mutating half: one real action, behind a policy gate.
+"""The mutating half: one typed action, behind a policy gate.
 
-``restart_app`` shells ``sx restart <app>`` — a genuine side effect on the fleet.
-``make_guard`` returns the gate ``sconixapp.agent.guarded_tool`` calls before it
-runs: it consults a plain allow-set and writes every decision to the audit log.
+`RESTART` is a `sconixcore.ActionSpec` — the action's contract (risk, approval,
+verification, side effects) declared once. `restart_app` executes it;
+`make_guard` returns the gate `sconixapp.agent.guarded_tool` calls first, which
+now records a `sconixcore.Decision` (outcome + accountable principal) per check.
+
+Pilot keeps its own policy (allow-set + cooldown) local — that's still one
+policy for one action; the reusable contract is the types, not the rule.
 """
 
 from __future__ import annotations
@@ -17,9 +21,19 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from sconixcore import (
+    ActionSpec,
+    ApprovalMode,
+    Decision,
+    DecisionOutcome,
+    Principal,
+    Risk,
+    Verification,
+)
 from sqlmodel import select
 
 from pilot.audit import Action, record
+from pilot.principal import PILOT, label
 
 COOLDOWN_S = 600  # don't restart the same target twice within 10 min
 
@@ -27,6 +41,27 @@ COOLDOWN_S = 600  # don't restart the same target twice within 10 min
 # `restart:` command (the drill target heals itself that way). Absent -> the
 # real fleet default, `sx restart <app>`.
 TARGETS_PATH: Path | None = None
+
+RESTART = ActionSpec(
+    name="restart_app",
+    argv=("sx", "restart", "<app>"),  # representative; real argv from _restart_cmd()
+    risk=Risk.EXTERNAL_WRITE,
+    idempotent=True,
+    approval=ApprovalMode.POLICY,
+    verification=Verification(
+        checks=("healthz", "readyz"),
+        within_seconds=30,
+        attempts=3,
+        interval_seconds=2,
+    ),
+    side_effects=("in-place container restart on a remote host, no rebuild",),
+    preconditions=(
+        "target assessed warn/down this run",
+        "cooldown clear",
+        "principal in scope",
+    ),
+    rollback=None,
+)
 
 
 def _restart_cmd(app: str) -> list[str]:
@@ -38,7 +73,7 @@ def _restart_cmd(app: str) -> list[str]:
 
 
 async def restart_app(app: str) -> str:
-    """Restart one deployed app in place (no rebuild). Mutating."""
+    """Restart one deployed app in place (no rebuild). Mutating — see RESTART."""
     cmd = _restart_cmd(app)
     started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
@@ -66,7 +101,7 @@ async def _restarted_within(session: Any, target: str, seconds: int) -> bool:
                 .where(
                     Action.target == target,
                     Action.tool == "restart_app",
-                    Action.decision == "allowed",
+                    Action.decision == DecisionOutcome.ALLOW.value,
                     Action.created_at >= cutoff,
                 )
                 .limit(1)
@@ -83,44 +118,52 @@ def make_guard(
     *,
     allow: set[str],
     run_result: dict[str, str],
-    principal: str = "ops-agent:pilot",
+    principal: Principal = PILOT,
     incidents: dict[str, int] | None = None,
     cooldown_s: int = COOLDOWN_S,
 ) -> Guard:
     """Gate: allow ``restart_app`` only for a target in ``allow`` (assessed
-    warn/down this run, with --fix), the principal permitted, and no restart of
-    the same target within ``cooldown_s``. Every check is audited (with the
-    principal + incident id); ``run_result[target]`` gets ``"allowed"`` or
-    ``"denied: <reason>"`` so the caller can move the incident's state."""
+    warn/down this run, with --fix), the principal in scope, and no restart of
+    the same target within ``cooldown_s``. Records a `sconixcore.Decision` per
+    check; ``run_result[target]`` gets the outcome so the caller can move the
+    incident's state."""
 
     incidents = incidents or {}
+    who = label(principal)
+
+    async def _deny_reason(tool: str, target: str) -> str:
+        """Empty string == allowed."""
+        if tool != "restart_app":
+            return f"no policy for tool {tool!r}"
+        if target not in allow:
+            return "not an approved target this run (healthy, or --fix not set)"
+        if principal.scope and target not in principal.scope:
+            return f"{who} scope does not include {target}"
+        if await _restarted_within(session, target, cooldown_s):
+            return f"already restarted within {cooldown_s}s — a loop won't help, escalate"
+        return ""
 
     async def guard(tool: str, kwargs: dict[str, Any]) -> bool | str:
         target = str(kwargs.get("app", "?"))
-        args = json.dumps(kwargs, default=str)
-        common = {
-            "target": target,
-            "incident_id": incidents.get(target),
-            "principal": principal,
-            "tool": tool,
-            "args": args,
-        }
-
-        if tool != "restart_app":
-            reason = f"no policy for tool {tool!r}"
-        elif target not in allow:
-            reason = "not an approved target this run (healthy, or --fix not set)"
-        elif await _restarted_within(session, target, cooldown_s):
-            reason = f"already restarted within {cooldown_s}s — a loop won't help, escalate"
-        else:
-            await record(
-                session, **common, decision="allowed", reason="warn/down + --fix + cooldown clear"
-            )
-            run_result[target] = "allowed"
-            return True
-
-        await record(session, **common, decision="denied", reason=reason)
-        run_result[target] = f"denied: {reason}"
-        return reason
+        reason = await _deny_reason(tool, target)
+        outcome = DecisionOutcome.ALLOW if reason == "" else DecisionOutcome.DENY
+        decision = Decision(
+            outcome=outcome,
+            decided_by=principal,
+            decided_at=datetime.now(UTC).isoformat(),
+            reason=reason or "warn/down + --fix + cooldown clear",
+        )
+        await record(
+            session,
+            target=target,
+            incident_id=incidents.get(target),
+            principal=who,
+            tool=tool,
+            args=json.dumps(kwargs, default=str),
+            decision=outcome.value,
+            reason=decision.reason,
+        )
+        run_result[target] = outcome.value
+        return True if outcome is DecisionOutcome.ALLOW else decision.reason
 
     return guard

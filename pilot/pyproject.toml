@@ -5,6 +5,7 @@ description = "an agent that watches the Sconix fleet and says what it sees"
 requires-python = ">=3.12"
 dependencies = [
     "sconixapp[agent]",
+    "sconixcore",
     "httpx>=0.27",
     "aiosqlite>=0.20",
     "pyyaml>=6.0",
@@ -15,6 +16,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
 
 [tool.uv.sources]
 sconixapp = { path = "/home/sconix/systems/os/sconixapp", editable = true }
+sconixcore = { path = "/home/sconix/systems/os/sconixcore", editable = true }
 
 [tool.ruff]
 line-length = 100
