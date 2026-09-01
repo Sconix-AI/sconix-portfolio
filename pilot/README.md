@@ -7,39 +7,43 @@ side effects, built on the Sconix Systems engine (`sconixapp`, `sx`, the shared
 Caddy edge). It grows one slice at a time; each slice that hurts feeds a fix back
 into the engine.
 
-## Where it is now — slice 3: an unattended loop with memory
+## Where it is now — the agent operating loop, end to end
 
 ```
-          ┌──────────────────────  watch: every N s  ──────────────────────┐
-          ▼                                                                │
-targets ─▶ probe() ─raw─▶ assess (haiku) ─▶ verdict ─▶ memory.observe() ───┤
- fleet    /healthz +      + incident        severity   open / bump / close │
-          /readyz         history           headline   the target's incident
-                                               │                          │
-                                    warn/down + --fix ?                    │
-                                               │ yes                       │
-                                               ▼                           │
-                       fix (sonnet) ─ restart_app ─▶ guarded_tool ─────────┘
-                                                     policy gate:
-                                                       target unhealthy this run
-                                                       + no restart in last 10 min
-                                                     allow → sx restart   (audited)
-                                                     deny  → reason back to model
+                       ┌─────────  watch: every N s  ─────────┐
+                       ▼                                      │
+ targets ─▶ probe ─▶ assess ─▶ incident ─▶ propose ─▶ GATE ─▶ act ─▶ verify ─▶ resolve
+  fleet    health   diagnosis   lifecycle   restart   policy   sx     re-probe    │
+                    +confidence  (below)               +audit  restart          escalate
+```
+
+**Incident lifecycle** (`pilot/memory.py`, forward-only, transitions validated):
+
+```
+detected → diagnosed → proposed → approved → acted → verified → resolved
+                |           |          |        |
+                +---------- escalated <-+--------+     (needs a human)
 ```
 
 - `probe()` — read-only. `/healthz` + `/readyz`, timed. Never raises.
-- `assess` — `run_agent` (haiku), one turn, no tools. Now fed the target's
-  **incident history** (`pilot/memory.py`), so "flapping for an hour" ≠ "just now".
-- `memory.observe()` — opens an `Incident` when a target first goes non-ok,
-  bumps `ticks` while it stays bad, closes it on recovery. A fresh failure after
-  recovery is a *new* incident.
+- `assess` — `run_agent` (haiku) → `{severity, headline, detail, confidence}`,
+  fed the target's **incident history** so a flap reads differently from a blip.
+- `observe()` — opens an `Incident` (state `detected`) on the first non-ok; a
+  later `ok` while state is `acted` → `verified` → `resolved`; a fresh failure
+  after resolution is a **new** incident.
 - `fix` — only with `--fix`, only for `warn`/`down`. `run_agent` (sonnet) with one
-  mutating tool, `restart_app`, wrapped by `sconixapp.agent.guarded_tool`. The
-  gate (`pilot/act.py:make_guard`) needs the target unhealthy *this run* **and**
-  a clear 10-minute cooldown — a wedged app can't be restart-looped.
-- `watch` — `tick()` on a timer, one line per tick, `Ctrl-C` clean.
-- Every `run_agent` call writes an `AgentRun` row; every proposed action writes
-  an `Action` row. Both in `pilot.db`.
+  mutating tool, `restart_app`, wrapped by `sconixapp.agent.guarded_tool`.
+- the **gate** (`pilot/act.py:make_guard`) allows a restart only when the target
+  is unhealthy this run, the **principal** is permitted, and no restart happened
+  in the last 10 min. Allowed / denied both hit the `Action` audit table.
+- **verify** — after an allowed restart, `tick()` re-probes the target the same
+  pass; the incident resolves only if it's actually healthy again.
+- every `run_agent` call → an `AgentRun` row (cost/tokens); every proposal →
+  an `Action` row (principal, decision, reason). Both in `pilot.db`.
+
+**Principal** (`pilot/principal.py`) — every incident and action records who
+caused it: `kind ∈ {human, coding-agent, ops-agent, ci}`, id, intent, scope.
+The unattended loop runs as `ops-agent:pilot`.
 
 `restart_app` is the only real side effect, and it cannot fire unless policy says so.
 
@@ -64,14 +68,18 @@ The drill (`pilot/drill.py`) is a fake app whose health you toggle. `wedged` =
 runs the real `tick()` against it; the only side effect is healing the drill.
 
 ```
-tick 1  drill=ok                 baseline
-tick 2  drill=down  ← RESTARTED   wedged → agent: "classic transient issue" →
-                                  gate ALLOWED → heal ran (34 ms)
-tick 3  drill=warn                recovered (pilot notes the flap)
-tick 4  drill=down                wedged again, inside cooldown → gate DENIED:
-                                  "already restarted within 600s — escalate"
+tick 1  drill=ok   [resolved]              baseline
+tick 2  drill=down  [resolved] ← RESTARTED  wedged → agent: "classic transient" →
+                                            gate ALLOWED → heal (33ms) → verified → resolved
+tick 3  drill=ok   [resolved]              stays healthy
+tick 4  drill=down  [escalated]             wedged again, inside cooldown →
+                                            gate DENIED → incident escalated
 
-actions (audit trail):  allowed → done (restarted drill) → denied (cooldown)
+incidents:  #1 resolved  · recovered after action
+            #2 escalated · denied: already restarted within 600s
+actions:    ops-agent:pilot · allowed · inc#1
+            ops-agent:pilot · done    · inc#1  (restarted drill in 33ms)
+            ops-agent:pilot · denied  · inc#2
 ```
 
 `down` mode (a real dependency outage — `readyz` reports `db: error`) is the
@@ -83,11 +91,14 @@ negative case: the agent reads it as an outage and declines to restart on its ow
 |-------|------|------------------------|
 | 1 ✅ | probe + assess + per-run accounting | (nothing — proved the seam) |
 | 2 ✅ | mutating tool (`restart_app`) + **policy gate** + audit trail | `sconixapp.agent.guarded_tool`; `sx restart` verb |
-| 3 ✅ | unattended `watch` loop + incident memory + restart cooldown | (none — proved in pilot; service principal still deferred) |
+| 3 ✅ | unattended `watch` loop + incident memory + restart cooldown | (none — proved in pilot) |
 | 3.5 ✅ | drill harness + `task demo` — down→act→cooldown-deny, end to end | (none — pilot-only) |
-| 4 | canary deploy + auto-rollback | `sx canary` / `sx rollback` verbs |
+| 3.7 ✅ | incident **state machine** + **verify** step + **principal** on every incident/action + confidence | (none — logged in `PILOT_REQUIREMENTS.md` for Codex to extract) |
+| 4 | canary deploy + auto-rollback | `sx canary` / `sx rollback` — **blocked on Codex / `~/systems`** |
 | 5 | public status page | an incident/status package |
 
-## Friction log (→ engine backlog)
+## For the platform
 
-Kept in `NOTES.md` as slices land.
+- `PILOT_REQUIREMENTS.md` — the concrete "Pilot needs from Sconix" contract
+  (checkpoint artifact; pairs with the constitution / glossary / manifest schema).
+- `NOTES.md` — running friction log, items #1–13.

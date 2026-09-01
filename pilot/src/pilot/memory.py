@@ -1,9 +1,22 @@
-"""Incident memory: what's wrong, since when, and how many times we've seen it.
+"""Incident memory + lifecycle.
 
-Without this the agent is a goldfish — every tick looks like the first. An
-incident opens when a target first goes non-ok, accrues ticks while it stays
-bad, and closes when it recovers. Recent history is fed back into the next
-assessment so "flapping for an hour" reads differently from "just now".
+An incident moves through an explicit state machine:
+
+    detected -> diagnosed -> proposed -> approved -> acted -> verified -> resolved
+                    |            |           |         |
+                    +----------- escalated <-+---------+     (needs a human)
+
+- **detected**  first non-ok observation opens the incident
+- **diagnosed** the assessor produced a severity + headline + detail (+ confidence)
+- **proposed**  the fix agent proposed an action (a restart)
+- **approved**  the policy gate allowed it
+- **acted**     the action ran
+- **verified**  a *later* probe confirms the target is healthy again
+- **resolved**  closed — either verified, or it recovered on its own
+- **escalated** the gate refused, or the agent judged no safe action exists
+
+Every incident records the `Principal` that caused it. Sources of truth are this
+table plus `Action` (audit) and `AgentRun` (cost/tokens) — not chat logs.
 """
 
 from __future__ import annotations
@@ -14,9 +27,35 @@ from typing import Any
 from sqlalchemy import Column, DateTime
 from sqlmodel import Field, SQLModel, select
 
+DETECTED = "detected"
+DIAGNOSED = "diagnosed"
+PROPOSED = "proposed"
+APPROVED = "approved"
+ACTED = "acted"
+VERIFIED = "verified"
+RESOLVED = "resolved"
+ESCALATED = "escalated"
+
+_OPEN_STATES = {DETECTED, DIAGNOSED, PROPOSED, APPROVED, ACTED, ESCALATED}
+
+# forward-only; escalate is reachable from any open working state
+_ALLOWED: dict[str, set[str]] = {
+    DETECTED: {DIAGNOSED, ESCALATED, RESOLVED},
+    DIAGNOSED: {PROPOSED, ESCALATED, RESOLVED},
+    PROPOSED: {APPROVED, ESCALATED, RESOLVED},
+    APPROVED: {ACTED, ESCALATED},
+    ACTED: {VERIFIED, ESCALATED, DIAGNOSED},  # DIAGNOSED = still bad next tick
+    VERIFIED: {RESOLVED},
+    ESCALATED: {DIAGNOSED, RESOLVED},
+}
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _dt() -> Any:
+    return Column(DateTime(timezone=True), nullable=True)
 
 
 class Incident(SQLModel, table=True):
@@ -24,16 +63,23 @@ class Incident(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     target: str = Field(index=True)
+    principal: str = "ops-agent:pilot"
+    state: str = Field(default=DETECTED, index=True)
+
     opened_at: datetime = Field(
         default_factory=_utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
-    closed_at: datetime | None = Field(
-        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
+    acted_at: datetime | None = Field(default=None, sa_column=_dt())
+    verified_at: datetime | None = Field(default=None, sa_column=_dt())
+    closed_at: datetime | None = Field(default=None, sa_column=_dt())
+
     ticks: int = 1  # observations while open
     last_severity: str = "warn"
     last_headline: str = ""
+    diagnosis: str = ""
+    confidence: float | None = None
+    resolution: str = ""
 
     @property
     def open(self) -> bool:
@@ -52,28 +98,73 @@ async def _open_incident(session: Any, target: str) -> Incident | None:
     )
 
 
-async def observe(session: Any, target: str, severity: str, headline: str) -> Incident | None:
-    """Record one observation. Opens / bumps / closes the target's incident.
-
-    Returns the currently-open incident for the target, or ``None`` if healthy.
-    """
-    inc = await _open_incident(session, target)
-    if severity == "ok":
-        if inc is not None:
-            inc.closed_at = _utcnow()
-            session.add(inc)
-            await session.flush()
-        return None
-
-    if inc is None:
-        inc = Incident(target=target, last_severity=severity, last_headline=headline)
-    else:
-        inc.ticks += 1
-        inc.last_severity = severity
-        inc.last_headline = headline
+async def _save(session: Any, inc: Incident) -> Incident:
     session.add(inc)
     await session.flush()
     return inc
+
+
+async def transition(session: Any, inc: Incident, to: str, **fields: Any) -> Incident:
+    """Move an incident to state ``to``. Raises on an illegal transition."""
+    if to != inc.state and to not in _ALLOWED.get(inc.state, set()):
+        raise ValueError(f"illegal incident transition {inc.state} -> {to}")
+    inc.state = to
+    for k, v in fields.items():
+        setattr(inc, k, v)
+    if to == ACTED and inc.acted_at is None:
+        inc.acted_at = _utcnow()
+    if to == VERIFIED:
+        inc.verified_at = _utcnow()
+    if to == RESOLVED:
+        inc.closed_at = _utcnow()
+    return await _save(session, inc)
+
+
+async def observe(
+    session: Any, target: str, severity: str, headline: str, principal: str
+) -> Incident | None:
+    """Record one observation; open / bump / verify+resolve the target's incident.
+
+    Returns the open incident for the target, or ``None`` when it's healthy.
+    """
+    inc = await _open_incident(session, target)
+
+    if severity == "ok":
+        if inc is None:
+            return None
+        if inc.state == ACTED:
+            await transition(session, inc, VERIFIED, last_severity=severity, last_headline=headline)
+            await transition(session, inc, RESOLVED, resolution="recovered after action")
+            return None
+        await transition(
+            session,
+            inc,
+            RESOLVED,
+            last_severity=severity,
+            last_headline=headline,
+            resolution="recovered without action",
+        )
+        return None
+
+    if inc is None:
+        return await _save(
+            session,
+            Incident(
+                target=target,
+                principal=principal,
+                state=DETECTED,
+                last_severity=severity,
+                last_headline=headline,
+            ),
+        )
+
+    inc.ticks += 1
+    inc.last_severity = severity
+    inc.last_headline = headline
+    # a still-bad target that had already acted rolls back to diagnosed for this tick
+    if inc.state == ACTED:
+        inc.state = DIAGNOSED
+    return await _save(session, inc)
 
 
 async def history(session: Any, target: str, *, limit: int = 5) -> list[Incident]:
@@ -98,7 +189,7 @@ def summarize(incidents: list[Incident]) -> str:
         return "no prior incidents for this target"
     parts: list[str] = []
     for i in incidents:
-        state = f"open, {i.ticks} ticks" if i.open else "resolved"
-        since = i.opened_at.strftime("%H:%M")
-        parts.append(f"[{state}] since {since}: {i.last_severity} — {i.last_headline}")
+        when = i.opened_at.strftime("%H:%M")
+        tail = i.resolution or i.last_headline
+        parts.append(f"[{i.state}, {i.ticks} ticks, since {when}] {i.last_severity} — {tail}")
     return " | ".join(parts)

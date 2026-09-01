@@ -58,7 +58,7 @@ async def main() -> int:
     client = await _client()
     targets = load_targets(tf)
 
-    print(f"\n  drill app on :{port}\n  {'-' * 66}")
+    print(f"\n  drill app on :{port}\n  {'-' * 70}")
     try:
         for i, (toggle, note) in enumerate(SCRIPT, 1):
             if toggle:
@@ -66,21 +66,24 @@ async def main() -> int:
             rows = await tick(client, session, targets, do_fix=True)
             r = rows[0]
             mark = "  ← RESTARTED" if r["restarted"] else ""
-            print(f"  tick {i}  drill={r['severity']:<4}{mark}  {note}")
+            print(f"  tick {i}  drill={r['severity']:<4} [{r['state']}]{mark}  {note}")
             print(f"          headline: {r['headline']}")
             if r["said"]:
                 print(f"          pilot:    {r['said'].splitlines()[0][:90]}")
-        print(f"  {'-' * 66}")
+        print(f"  {'-' * 70}")
 
         incs = (await session.execute(select(Incident).order_by(Incident.id))).scalars().all()
         acts = (await session.execute(select(Action).order_by(Action.id))).scalars().all()
-        print("\n  incidents")
+        print("\n  incidents  (target · state · principal · resolution)")
         for x in incs:
-            state = f"open ({x.ticks} ticks)" if x.open else "resolved"
-            print(f"    #{x.id} drill  {state:<16} last: {x.last_severity} — {x.last_headline}")
-        print("\n  actions (the audit trail)")
+            print(
+                f"    #{x.id} {x.target} · {x.state} · {x.principal} · "
+                f"{x.resolution or x.last_headline}  ({x.ticks} ticks)"
+            )
+        print("\n  actions  (the audit trail — principal · decision · why)")
         for a in acts:
-            print(f"    {a.decision:<8} {a.reason or a.result.splitlines()[0][:70]}")
+            why = a.reason or a.result.splitlines()[0][:64]
+            print(f"    {a.principal} · {a.decision:<8} · inc#{a.incident_id} · {why}")
         print()
     finally:
         await session.rollback()

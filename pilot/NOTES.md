@@ -113,3 +113,37 @@ Still felt:
 13. **The drill only fakes HTTP health.** No CPU/mem pressure, no partial
     failure, no slow-then-fail. Enough for slice 3.5; slice 4 (canary) will want
     a richer fault menu.
+
+## Slice 3.7 — lifecycle, verify, principal
+
+Codex's checkpoint task list, done in `pilot`:
+
+- **Incident state machine** (`pilot/memory.py`): `detected → diagnosed →
+  proposed → approved → acted → verified → resolved` (+ `escalated`), forward-only,
+  `transition()` rejects illegal moves. Timestamps: `acted_at`, `verified_at`,
+  `closed_at`. New fields: `diagnosis`, `confidence`, `resolution`.
+- **Verify step** (`run.py:_settle`): after an allowed restart, re-probe the
+  target the same tick; resolve only if healthy, else stay `acted` → next tick
+  escalates.
+- **Principal** (`pilot/principal.py`): `kind ∈ {human, coding-agent, ops-agent,
+  ci}`, id, intent, scope. Recorded on every `Incident` and `Action`.
+  `run_agent` still takes the `str(principal)` — that's R1 in
+  `PILOT_REQUIREMENTS.md`.
+- **Confidence** — the assessor now returns `0..1`; stored on the incident.
+- 17 tests (adds lifecycle: verify+resolve, still-bad rollback, repeated
+  incident, illegal transition, failed restart command).
+- `task demo` re-run: incidents #1 `resolved` (recovered after action) / #2
+  `escalated`; audit shows `ops-agent:pilot` on every row, linked to `inc#`.
+
+Deliverable: **`PILOT_REQUIREMENTS.md`** — R1–R9 + cautions + open questions,
+the Pilot half of the first platform checkpoint.
+
+Still felt:
+
+14. **A failed restart command still transitions the incident to `acted`.** The
+    guard's `run_result` says "allowed" but doesn't carry whether the tool then
+    succeeded; `_settle` only learns via the follow-up probe. Works, but the
+    incident should distinguish "acted, action errored" from "acted, didn't
+    help". → `pilot` backlog.
+15. **`_settle` re-probes once, immediately.** No grace period for a slow
+    restart. A real app needs "verify within N seconds, M attempts". → slice 4.

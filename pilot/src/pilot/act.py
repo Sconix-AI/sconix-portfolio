@@ -83,16 +83,28 @@ def make_guard(
     *,
     allow: set[str],
     run_result: dict[str, str],
+    principal: str = "ops-agent:pilot",
+    incidents: dict[str, int] | None = None,
     cooldown_s: int = COOLDOWN_S,
 ) -> Guard:
-    """Gate: allow ``restart_app`` only for a target in ``allow`` (the apps this
-    run assessed as warn/down, and only when --fix was given), and not if the
-    same target was already restarted within ``cooldown_s``. Every check is
-    audited; the outcome of an allowed call is recorded in ``run_result``."""
+    """Gate: allow ``restart_app`` only for a target in ``allow`` (assessed
+    warn/down this run, with --fix), the principal permitted, and no restart of
+    the same target within ``cooldown_s``. Every check is audited (with the
+    principal + incident id); ``run_result[target]`` gets ``"allowed"`` or
+    ``"denied: <reason>"`` so the caller can move the incident's state."""
+
+    incidents = incidents or {}
 
     async def guard(tool: str, kwargs: dict[str, Any]) -> bool | str:
         target = str(kwargs.get("app", "?"))
         args = json.dumps(kwargs, default=str)
+        common = {
+            "target": target,
+            "incident_id": incidents.get(target),
+            "principal": principal,
+            "tool": tool,
+            "args": args,
+        }
 
         if tool != "restart_app":
             reason = f"no policy for tool {tool!r}"
@@ -102,17 +114,13 @@ def make_guard(
             reason = f"already restarted within {cooldown_s}s — a loop won't help, escalate"
         else:
             await record(
-                session,
-                target=target,
-                tool=tool,
-                args=args,
-                decision="allowed",
-                reason="warn/down + --fix + cooldown clear",
+                session, **common, decision="allowed", reason="warn/down + --fix + cooldown clear"
             )
             run_result[target] = "allowed"
             return True
 
-        await record(session, target=target, tool=tool, args=args, decision="denied", reason=reason)
+        await record(session, **common, decision="denied", reason=reason)
+        run_result[target] = f"denied: {reason}"
         return reason
 
     return guard

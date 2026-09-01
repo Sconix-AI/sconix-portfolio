@@ -45,6 +45,17 @@ async def test_probe_follows_drill_state(server) -> None:
     assert healed.healthz_status == 200 and healed.readyz_body["status"] == "ok"
 
 
+async def test_restart_app_reports_a_failed_command(tmp_path) -> None:
+    tf = tmp_path / "t.yaml"
+    tf.write_text("targets:\n  - name: drill\n    url: http://x\n    restart: sh -c 'exit 3'\n")
+    act.TARGETS_PATH = tf
+    try:
+        out = await act.restart_app("drill")
+        assert out.startswith("restart failed (exit 3)")
+    finally:
+        act.TARGETS_PATH = None
+
+
 def test_restart_cmd_uses_per_target_override(tmp_path) -> None:
     tf = tmp_path / "t.yaml"
     tf.write_text(

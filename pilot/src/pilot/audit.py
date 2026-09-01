@@ -23,6 +23,8 @@ class Action(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     target: str = Field(index=True)
+    incident_id: int | None = Field(default=None, index=True)
+    principal: str = "ops-agent:pilot"  # who caused this
     tool: str
     args: str = "{}"  # json
     decision: str  # allowed | denied | done | failed
