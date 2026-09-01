@@ -42,24 +42,32 @@ consumer). The **policy** behind it (`pilot/act.py:make_guard` — allow-set +
 cooldown + audit) is Pilot-specific and should **not** be extracted yet.
 
 **Needs:** a tool declares a risk level; before any mutating tool runs,
-`run_agent` calls `approve(principal, action, args) -> Decision` where
-`Decision ∈ {allow, allow_once, deny(reason), defer}`. Pilot today only needs
-`allow | deny`; `allow_once` / `defer` are likely but unproven.
+`run_agent` calls `approve(principal, action, args) -> Decision`. The GLOSSARY
+`Policy` definition ("permits, denies, constrains, or requires approval") already
+covers the four outcomes. Pilot today exercises only `allow | deny`; `constrain`
+(allow-once) and `require-approval` (defer) are contract-reserved, unproven.
 
 ### R3 — Typed actions with metadata
-Pilot's one action, `restart_app`, has an implicit contract worth making explicit:
+Pilot's one action, `restart_app`, has an implicit contract worth making
+explicit. Risk uses the GLOSSARY enum
+(`read-only | local-write | external-write | destructive`):
 
 | field | restart_app |
 |---|---|
-| risk | production-write |
-| side effect | in-place container restart, no rebuild |
-| preconditions | target assessed warn/down this run; cooldown clear |
+| risk | `external-write` |
+| side effect | in-place container restart on a remote host, no rebuild |
+| preconditions | target assessed warn/down this run; cooldown clear; principal in scope |
 | verification | re-probe `/healthz` + `/readyz`, must be 200/ok |
 | rollback | n/a (idempotent) |
 | idempotent | yes |
 
 **Needs:** an action registry where these are declared, so the gate and the
-audit trail read them instead of Pilot hardcoding.
+audit trail read them instead of Pilot hardcoding. The v1 `command` schema
+already carries `risk` / `approval` / `verify`; it still needs `sideEffect`,
+`preconditions`, `rollback`, `idempotent`, and a grace/retry shape on `verify`
+(`{checks, within, attempts}` — Pilot's `_settle` re-probes once, immediately,
+which is too eager for a slow restart). `run` should be an **argv array**, not a
+shell string — `restart_app` already `shlex.split`s to avoid quoting bugs.
 
 ### R4 — An incident lifecycle primitive
 `pilot/memory.py` implements: `detected → diagnosed → proposed → approved →
@@ -67,10 +75,11 @@ acted → verified → resolved` (+ `escalated`), transitions validated, timesta
 stamped (`acted_at`, `verified_at`, `closed_at`), plus `principal`, `diagnosis`,
 `confidence`, `resolution`, `ticks`.
 
-**Needs:** this as a reusable primitive. **Open question:** does it live in
-`sconixapp`, a new prod-ops engine, or stay in Pilot until a second operator
-exists? The constitution keeps research and production engines separate — an
-incident is a production-ops concept, not a research one.
+**Needs:** this as a reusable primitive. **Resolved at checkpoint 1:** it lives
+in **Systems** (production-ops) — the constitution's "Systems handles persistent
+products and operations", and it is not a research concept. `pilot/memory.py` is
+the reference to extract; validate the state set against a second operator before
+freezing it.
 
 ### R5 — Structured memory, sources of truth first
 Pilot's memory is a SQL table you can query — not a vector store. Incident
@@ -113,18 +122,29 @@ Pilot added `~/systems/secrets.env` (SOPS+age, same rule as apps) +
 - **`Principal.scope`** is a flat target allow-list today. Real RBAC / org
   policy is premature.
 
-## Open questions for the checkpoint
+## Open questions
 
-1. Incident lifecycle home: `sconixapp`, new `sconix.ops`, or Pilot for now?
-2. `Decision` for v1: `allow | deny` only, or include `allow_once` / `defer`?
-3. Budget ceilings attach to: principal, project, or org?
-4. Should `sconix.yaml`'s `commands: { deploy: { risk, approval } }` be the
-   source the gate reads, replacing Pilot's hardcoded allow-set?
+Resolved at checkpoint 1:
+
+1. ~~Incident lifecycle home~~ → **Systems** (production-ops). See R4.
+4. ~~Does `sconix.yaml` `commands.{risk,approval}` replace the hardcoded
+   allow-set?~~ → **Yes.** Pilot migrates `make_guard` to read a loaded manifest
+   (slice 4+).
+
+Still open for Phase 2:
+
+2. `Decision` for v1: ship `allow | deny` only, or land all four
+   (`allow / constrain / deny / require-approval`) in the type now?
+3. Budget / rate ceilings attach to: principal, project, or org?
 5. Does `AgentRun` (cost/tokens) belong with the incident lifecycle, or stay a
    separate concern that any principal's activity rolls up into?
+6. `Principal.kind` vocabulary: Pilot has `{human, coding-agent, ops-agent, ci}`;
+   GLOSSARY has agent/service. Proposal: `kind ∈ {human, agent, service, ci}` +
+   optional `role` (`coding`, `ops`).
 
 ## Friction log
 
-Full detail in `NOTES.md` (items #1–13). The load-bearing ones for the platform:
+Full detail in `NOTES.md` (items #1–15). The load-bearing ones for the platform:
 #1 (principal), #4 (gate shape), #7 (policy+audit reusability), #9 (system
-secrets), #12 (incident close/flap policy).
+secrets), #12 (incident close/flap policy), #14 (acted-but-errored),
+#15 (verify grace/retry).
