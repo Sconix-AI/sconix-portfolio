@@ -1,15 +1,21 @@
 # Sconix Portfolio
 
-Hireable flagship projects, built as a stress test of the Sconix engine
-(`~/research`, `~/systems`). Each project is real, deployed, and measured; the
-engine grows only when a project makes a gap hurt.
+Flagship projects built as a stress test of the [Sconix
+platform](https://github.com/sconix-dev/sconix-systems). Each is real, deployed,
+and measured; the platform only grows when a project makes a gap hurt.
 
 **Positioning:** Agentic AI Engineer with an infrastructure edge.
 
 | # | project | what it proves | status |
 |---|---------|----------------|--------|
-| F1 | [`pilot/`](pilot/) | a production agent with real side effects — permissions, guardrails, failure analysis | slice 2 of 5 |
-| F2 | `posttrain/` (tbd) | owns a model-quality metric — fine-tune on the 5090, publish base vs. tuned | not started |
-| F3 | `inference/` (tbd) | quantified inference cost/latency reduction | not started |
+| **F1** | **[pilot](https://github.com/sconix-dev/pilot)** | a production agent with real side effects — typed actions, a policy gate, a human-approval boundary, incident memory, verified recovery | **done** — 45 tests, [runbook](https://github.com/sconix-dev/pilot/blob/main/RUNBOOK.md) |
+| F2 | `posttrain` (tbd) | owns a model-quality metric — post-train a small model on an RTX 5090, publish base vs. tuned on a held-out eval + an HF model card | not started |
+| F3 | `inference` (tbd) | quantified inference cost / latency reduction (quantization, batching, spec-decode) | not started |
 
-F2 and F3 share a model and a serving stack, built on `~/research`.
+F2 and F3 share a model and a serving stack, built on the [research
+engine](https://github.com/sconix-dev/sconix-research) and
+[vllm-explore](https://github.com/sconix-dev/vllm-explore).
+
+Also shipped on the platform: three SaaS apps (auth, Stripe billing, an
+in-product agent), each deployed with TLS + Postgres + Redis + migrations on one
+small box behind a shared edge.
