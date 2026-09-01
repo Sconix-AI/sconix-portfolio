@@ -1,0 +1,6 @@
+# Drill fleet — a single fake app (pilot.drill) whose health you toggle by hand.
+# Use with:  task pilot -- watch --targets drill.targets.yaml --fix --every 5
+targets:
+  - name: drill
+    url: http://127.0.0.1:8765
+    restart: python -m pilot.drill heal --port 8765

@@ -86,3 +86,30 @@ Still felt:
     → `pilot` backlog (slice 4/5).
 11. **Incident memory never forgets.** No retention / rollup; `pilot.db` grows
     forever. → `pilot` backlog: close-out summaries + prune.
+
+## Slice 3.5 — drill harness
+
+`pilot/drill.py` — a fake app (`/healthz` + `/readyz`, same shape as
+`sconixapp.health`) whose state you toggle: `healthy | wedged | down | degraded`.
+`wedged` (healthz 503, deps fine) is the "a restart clears it" case; `down`
+(readyz reports a dead dep) is the "restart won't help" case. Per-target
+`restart:` in the targets file overrides `sx restart` — the drill heals itself.
+
+`pilot/demo.py` / `task demo` — runs the real `tick()` through
+wedge → agent restarts (gate ALLOWED) → recover → wedge again (gate DENIED,
+cooldown). Verified live; audit trail comes out as exactly `allowed → done →
+denied`.
+
+Fixed along the way: `tick()` was writing a `done` audit row on every `--fix`
+pass even when the agent never called the tool. Now the tool records its own
+`done` / `failed`, and the row only exists if a restart actually ran.
+
+Still felt:
+
+12. **`observe()` keeps an incident open while severity is `warn`.** After a
+    successful restart the app is `ok` at the probe but the assessor calls it
+    `warn` (flapping), so the incident doesn't close. Defensible, but the
+    close/flap policy needs a real decision. → `pilot` backlog.
+13. **The drill only fakes HTTP health.** No CPU/mem pressure, no partial
+    failure, no slow-then-fail. Enough for slice 3.5; slice 4 (canary) will want
+    a richer fault menu.

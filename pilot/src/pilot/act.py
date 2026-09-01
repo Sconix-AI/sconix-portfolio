@@ -9,26 +9,40 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+import yaml
 from sqlmodel import select
 
 from pilot.audit import Action, record
 
-SX = "sx"  # on PATH via ~/systems/os/bin
 COOLDOWN_S = 600  # don't restart the same target twice within 10 min
+
+# run.py points this at the active targets file; a target may carry its own
+# `restart:` command (the drill target heals itself that way). Absent -> the
+# real fleet default, `sx restart <app>`.
+TARGETS_PATH: Path | None = None
+
+
+def _restart_cmd(app: str) -> list[str]:
+    if TARGETS_PATH and TARGETS_PATH.exists():
+        for t in yaml.safe_load(TARGETS_PATH.read_text()).get("targets", []):
+            if t.get("name") == app and t.get("restart"):
+                return shlex.split(t["restart"])
+    return ["sx", "restart", app]
 
 
 async def restart_app(app: str) -> str:
-    """Restart the running containers for one deployed app (no rebuild). Mutating."""
+    """Restart one deployed app in place (no rebuild). Mutating."""
+    cmd = _restart_cmd(app)
     started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
-        SX,
-        "restart",
-        app,
+        *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
@@ -37,7 +51,7 @@ async def restart_app(app: str) -> str:
     tail = out.decode()[-500:].strip()
     if proc.returncode != 0:
         return f"restart failed (exit {proc.returncode}) after {ms}ms:\n{tail}"
-    return f"restarted {app} in {ms}ms:\n{tail}"
+    return f"restarted {app} in {ms}ms via `{' '.join(cmd)}`:\n{tail}"
 
 
 Guard = Callable[[str, dict[str, Any]], Awaitable[bool | str]]

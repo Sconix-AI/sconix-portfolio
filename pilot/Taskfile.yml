@@ -11,6 +11,16 @@ tasks:
     cmds:
       - uv run python -m pilot.run {{.CLI_ARGS}}
 
+  drill:
+    desc: "run the fake app; toggle with: task drill -- wedged | down | degraded | heal"
+    cmds:
+      - uv run python -m pilot.drill {{.CLI_ARGS | default "serve"}}
+
+  demo:
+    desc: "end-to-end: wedge the drill app, watch the agent restart it, then watch the gate refuse a 2nd"
+    cmds:
+      - uv run python -m pilot.demo
+
   test:
     cmds:
       - uv run pytest

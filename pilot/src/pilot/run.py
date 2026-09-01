@@ -5,6 +5,7 @@
     uv run python -m pilot.run --fix                # arm restart_app (policy-gated)
     uv run python -m pilot.run watch --every 60     # run unattended on a loop
     uv run python -m pilot.run watch --fix --for 900
+    uv run python -m pilot.run watch --targets drill.targets.yaml --fix   # drill
 
 Slice 3: `watch` runs the loop unattended, and `pilot.memory` gives it an
 incident record — an app that's been down for six ticks reads differently from
@@ -26,6 +27,7 @@ from sconixapp.agent import NAV, WORKER, guarded_tool, run_agent
 from sconixapp.db import dispose_engine, get_engine, get_session, init_engine
 from sqlmodel import SQLModel
 
+from pilot import act
 from pilot.act import make_guard, restart_app
 from pilot.audit import record
 from pilot.memory import history, observe, summarize
@@ -64,8 +66,8 @@ sentence. The policy gate may return BLOCKED (e.g. cooldown); if so, report it
 and stop."""
 
 
-def load_targets() -> list[dict[str, str]]:
-    return list(yaml.safe_load(TARGETS.read_text())["targets"])
+def load_targets(path: Path) -> list[dict[str, str]]:
+    return list(yaml.safe_load(path.read_text())["targets"])
 
 
 def _parse(text: str) -> dict[str, Any]:
@@ -110,7 +112,7 @@ async def fix(client: Any, session: Any, obs: Probe, verdict: dict, context: str
 
 
 async def tick(client: Any, session: Any, targets: list[dict], do_fix: bool) -> list[dict]:
-    """One full pass. Returns a row per target: name, severity, latency, headline, acted."""
+    """One full pass. A row per target: name, severity, latency, headline, acted."""
     probes = await asyncio.gather(*(probe(t["name"], t["url"]) for t in targets))
 
     assessed: list[tuple[Probe, dict, float]] = []
@@ -121,19 +123,33 @@ async def tick(client: Any, session: Any, targets: list[dict], do_fix: bool) -> 
         assessed.append((obs, verdict, cost))
 
     fixable = {o.name for o, v, _ in assessed if v["severity"] in ("warn", "down")}
-    acted: dict[str, str] = {}
+    said: dict[str, str] = {}  # the agent's closing line, per target
+    restarted: set[str] = set()  # targets the gate actually let through
     if do_fix and fixable:
-        guard = make_guard(session, allow=fixable, run_result={})
-        tool = guarded_tool(restart_app, guard=guard)
+        run_result: dict[str, str] = {}
+
+        async def _restart_and_record(app: str) -> str:
+            out = await restart_app(app)
+            await record(
+                session,
+                target=app,
+                tool="restart_app",
+                decision="failed" if out.startswith("restart failed") else "done",
+                result=out[:500],
+            )
+            return out
+
+        _restart_and_record.__name__ = "restart_app"
+        _restart_and_record.__doc__ = restart_app.__doc__
+
+        guard = make_guard(session, allow=fixable, run_result=run_result)
+        tool = guarded_tool(_restart_and_record, guard=guard)
         for obs, verdict, _ in assessed:
             if obs.name not in fixable:
                 continue
             ctx = summarize(await history(session, obs.name))
-            report = await fix(client, session, obs, verdict, ctx, tool)
-            await record(
-                session, target=obs.name, tool="restart_app", decision="done", result=report[:500]
-            )
-            acted[obs.name] = report
+            said[obs.name] = await fix(client, session, obs, verdict, ctx, tool)
+        restarted = set(run_result)
 
     await session.commit()
     return [
@@ -144,7 +160,8 @@ async def tick(client: Any, session: Any, targets: list[dict], do_fix: bool) -> 
             "headline": v["headline"],
             "detail": v["detail"],
             "cost": c,
-            "acted": acted.get(o.name, ""),
+            "said": said.get(o.name, ""),
+            "restarted": o.name in restarted,
         }
         for o, v, c in assessed
     ]
@@ -165,7 +182,7 @@ async def _open_session() -> Any:
     return await get_session().__anext__()
 
 
-def _print_pass(rows: list[dict], do_fix: bool) -> float:
+def _print_pass(rows: list[dict]) -> float:
     total = 0.0
     print(f"\n  {'app':<14}{'sev':<6}{'lat':>7}  headline")
     print("  " + "-" * 62)
@@ -174,17 +191,19 @@ def _print_pass(rows: list[dict], do_fix: bool) -> float:
         lat = f"{r['latency_ms']}ms" if r["latency_ms"] is not None else "-"
         print(f"  {r['name']:<14}{r['severity']:<6}{lat:>7}  {r['headline']}")
         print(f"  {'':<27}{r['detail']}")
-        if r["acted"]:
-            print(f"  {'':<27}↳ acted: {r['acted'][:120]}")
+        if r["said"]:
+            verb = "restarted" if r["restarted"] else "pilot"
+            print(f"  {'':<27}↳ {verb}: {r['said'][:120]}")
     print("  " + "-" * 62)
     print(f"  {len(rows)} target(s)   run cost ${total:.4f}\n")
     return total
 
 
-async def once(only: str | None, do_fix: bool) -> int:
-    targets = [t for t in load_targets() if only in (None, t["name"])]
+async def once(only: str | None, do_fix: bool, targets_path: Path) -> int:
+    act.TARGETS_PATH = targets_path
+    targets = [t for t in load_targets(targets_path) if only in (None, t["name"])]
     if not targets:
-        print(f"no target named {only!r}")
+        print(f"no target named {only!r} in {targets_path}")
         return 2
     client = await _client()
     session = await _open_session()
@@ -193,12 +212,13 @@ async def once(only: str | None, do_fix: bool) -> int:
     finally:
         await session.rollback()
         await dispose_engine()
-    _print_pass(rows, do_fix)
+    _print_pass(rows)
     return 0
 
 
-async def watch(do_fix: bool, every: int, for_s: int | None) -> int:
-    targets = load_targets()
+async def watch(do_fix: bool, every: int, for_s: int | None, targets_path: Path) -> int:
+    act.TARGETS_PATH = targets_path
+    targets = load_targets(targets_path)
     client = await _client()
     session = await _open_session()
     started = time.monotonic()
@@ -210,9 +230,14 @@ async def watch(do_fix: bool, every: int, for_s: int | None) -> int:
             stamp = time.strftime("%H:%M:%S")
             worst = max(rows, key=lambda r: ("ok", "warn", "down").index(r["severity"]))
             flags = " ".join(
-                f"{r['name']}={r['severity']}" + ("*" if r["acted"] else "") for r in rows
+                f"{r['name']}={r['severity']}" + ("*restarted" if r["restarted"] else "")
+                for r in rows
             )
             print(f"  {stamp}  tick {n:>3}  worst={worst['severity']:<4}  {flags}")
+            for r in rows:
+                if r["said"]:
+                    tag = "restarted" if r["restarted"] else "pilot"
+                    print(f"           └ {r['name']} ({tag}): {r['said'][:100]}")
             if for_s is not None and time.monotonic() - started >= for_s:
                 break
             await asyncio.sleep(every)
@@ -227,19 +252,24 @@ async def watch(do_fix: bool, every: int, for_s: int | None) -> int:
 
 def main(argv: list[str]) -> int:
     do_fix = "--fix" in argv
-    rest = [a for a in argv if a not in ("--fix",)]
+    rest = [a for a in argv if a != "--fix"]
 
-    def opt(name: str, default: int) -> int:
-        if name in rest:
-            return int(rest[rest.index(name) + 1])
-        return default
+    def opt(name: str, default: str) -> str:
+        return rest[rest.index(name) + 1] if name in rest else default
 
-    positional = [a for a in rest if not a.startswith("-") and not a.isdigit()]
+    targets_path = Path(opt("--targets", str(TARGETS)))
+    if not targets_path.is_absolute():
+        targets_path = ROOT / targets_path
+
+    flag_values = {opt("--every", ""), opt("--for", ""), opt("--targets", "")}
+    positional = [a for a in rest if not a.startswith("-") and a not in flag_values]
+
     if positional and positional[0] == "watch":
-        every = opt("--every", 60)
-        for_s = opt("--for", 0) or None
-        return asyncio.run(watch(do_fix, every, for_s))
-    return asyncio.run(once(positional[0] if positional else None, do_fix))
+        every = int(opt("--every", "60"))
+        for_s = int(opt("--for", "0")) or None
+        return asyncio.run(watch(do_fix, every, for_s, targets_path))
+    only = positional[0] if positional else None
+    return asyncio.run(once(only, do_fix, targets_path))
 
 
 if __name__ == "__main__":

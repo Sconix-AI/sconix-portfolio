@@ -53,8 +53,29 @@ task pilot -- relnotes              # just one
 task pilot -- --fix                 # arm restart_app (policy-gated, audited)
 task pilot -- watch --every 60      # unattended loop, read-only
 task pilot -- watch --fix --for 900 # unattended, armed, for 15 min
+task demo                           # end-to-end drill (see below)
 task test                           # no network
 ```
+
+## See it work — `task demo`
+
+The drill (`pilot/drill.py`) is a fake app whose health you toggle. `wedged` =
+`/healthz` 503s but dependencies are fine — a restart *should* clear it. The demo
+runs the real `tick()` against it; the only side effect is healing the drill.
+
+```
+tick 1  drill=ok                 baseline
+tick 2  drill=down  ← RESTARTED   wedged → agent: "classic transient issue" →
+                                  gate ALLOWED → heal ran (34 ms)
+tick 3  drill=warn                recovered (pilot notes the flap)
+tick 4  drill=down                wedged again, inside cooldown → gate DENIED:
+                                  "already restarted within 600s — escalate"
+
+actions (audit trail):  allowed → done (restarted drill) → denied (cooldown)
+```
+
+`down` mode (a real dependency outage — `readyz` reports `db: error`) is the
+negative case: the agent reads it as an outage and declines to restart on its own.
 
 ## Roadmap
 
@@ -63,6 +84,7 @@ task test                           # no network
 | 1 ✅ | probe + assess + per-run accounting | (nothing — proved the seam) |
 | 2 ✅ | mutating tool (`restart_app`) + **policy gate** + audit trail | `sconixapp.agent.guarded_tool`; `sx restart` verb |
 | 3 ✅ | unattended `watch` loop + incident memory + restart cooldown | (none — proved in pilot; service principal still deferred) |
+| 3.5 ✅ | drill harness + `task demo` — down→act→cooldown-deny, end to end | (none — pilot-only) |
 | 4 | canary deploy + auto-rollback | `sx canary` / `sx rollback` verbs |
 | 5 | public status page | an incident/status package |
 
