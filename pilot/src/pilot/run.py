@@ -70,13 +70,13 @@ Return ONLY a JSON object — no prose, no code fence:
 - "down": unreachable, or a non-200 on healthz."""
 
 _FIX_SYSTEM = """You are a release pilot. One app you watch is unhealthy. You have
-ONE tool: restart_app(app). An in-place restart clears transient failures (stuck
+ONE tool: restart(app). An in-place restart clears transient failures (stuck
 worker, leaked connection, wedged process) but does nothing for a bad deploy, a
 dependency outage, or a config error.
 
 Given the probe, the assessment, and the incident history: if a restart is a
 reasonable first move AND it hasn't already been tried this incident, call
-restart_app exactly once, then stop. Otherwise do not call it — say why in one
+restart exactly once, then stop. Otherwise do not call it — say why in one
 sentence. The policy gate may return BLOCKED (e.g. cooldown); if so, report it
 and stop."""
 
@@ -160,21 +160,24 @@ async def tick(
     restarted: set[str] = set()
     if do_fix and fixable:
         run_result: dict[str, str] = {}
+        decisions: dict[str, Any] = {}
 
         async def _restart_and_record(app: str) -> str:
-            res = await EXECUTOR.execute("restart_app", target=app)
+            res = await EXECUTOR.execute(
+                app, "restart", principal=principal, decision=decisions.get(app)
+            )
             await record(
                 session,
                 target=app,
                 incident_id=incidents.get(app),
                 principal=who,
-                tool="restart_app",
+                tool="restart",
                 decision="done" if res.ok else "failed",
                 result=res.output[:500],
             )
             return res.output
 
-        _restart_and_record.__name__ = "restart_app"
+        _restart_and_record.__name__ = "restart"
         _restart_and_record.__doc__ = restart_app.__doc__
 
         guard = make_guard(
@@ -184,6 +187,7 @@ async def tick(
             principal=principal,
             incidents=incidents,
             executor=EXECUTOR,
+            decisions=decisions,
         )
         tool = guarded_tool(_restart_and_record, guard=guard)
         for obs, verdict, _ in assessed:
@@ -245,7 +249,7 @@ async def _open_by_target(session: Any, target: str) -> Any:
 async def _verify_recovered(target: dict, verification: Any = None) -> bool:
     """Re-probe per the action's `Verification`: up to N attempts, spaced, with a
     wall-clock cap. True on the first healthy probe."""
-    v = verification or EXECUTOR.lookup("restart_app").verification
+    v = verification or EXECUTOR.lookup(target["name"], "restart").verification
     started = time.monotonic()
     for attempt in range(v.attempts):
         if attempt:

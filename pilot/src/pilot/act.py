@@ -46,8 +46,8 @@ COOLDOWN_S = 600  # don't restart the same target twice within 10 min
 TARGETS_PATH: Path | None = None
 
 RESTART = ActionSpec(
-    name="restart_app",
-    argv=("sx", "restart", "<app>"),  # representative; real argv from _restart_cmd()
+    name="restart",  # matches the `restart` command in a project's sconix.yaml
+    argv=("sx", "restart", "{project}"),  # representative; LocalExecutor uses _restart_cmd()
     risk=Risk.EXTERNAL_WRITE,
     idempotent=True,
     approval=ApprovalMode.POLICY,
@@ -103,7 +103,7 @@ async def _restarted_within(session: Any, target: str, seconds: int) -> bool:
                 select(Action)
                 .where(
                     Action.target == target,
-                    Action.tool == "restart_app",
+                    Action.tool == RESTART.name,
                     Action.decision == DecisionOutcome.ALLOW.value,
                     Action.created_at >= cutoff,
                 )
@@ -125,29 +125,32 @@ def make_guard(
     incidents: dict[str, int] | None = None,
     cooldown_s: int = COOLDOWN_S,
     executor: ActionExecutor | None = None,
+    decisions: dict[str, Decision] | None = None,
 ) -> Guard:
-    """Gate for the agent's mutating tool. The action must be **declared** by the
-    executor (→ `sconix.yaml` at slice 4); its `approval` mode drives the check:
+    """Gate for the agent's mutating tool. The action must be **declared** in the
+    target's manifest (via the executor); its `approval` mode drives the check:
 
     - `never`  → allowed (still audited).
     - `policy` → Pilot's local policy: target in ``allow`` this run, principal in
-      scope, no restart within ``cooldown_s``.
+      scope, no action within ``cooldown_s``.
     - `always` → denied — needs a human; Pilot can't self-approve.
 
-    Records a `sconixcore.Decision` per check; ``run_result[target]`` gets the
-    outcome so the caller can move the incident's state."""
+    Records a `sconixcore.Decision` per check. ``run_result[target]`` gets the
+    outcome string; ``decisions[target]`` (if given) gets the `Decision` object,
+    which `execute()` needs to authorize the action."""
 
     if executor is None:
         from pilot.executor import DEFAULT as executor
 
     incidents = incidents or {}
+    decisions = decisions if decisions is not None else {}
     who = label(principal)
 
     async def _deny_reason(tool: str, target: str) -> str:
         """Empty string == allowed."""
-        spec = executor.lookup(tool)
+        spec = executor.lookup(target, tool)
         if spec is None:
-            return f"undeclared action {tool!r} — not in the project manifest"
+            return f"undeclared action {tool!r} — not in {target}'s manifest"
         if spec.approval is ApprovalMode.NEVER:
             return ""
         if spec.approval is ApprovalMode.ALWAYS:
@@ -182,6 +185,7 @@ def make_guard(
             reason=decision.reason,
         )
         run_result[target] = outcome.value
+        decisions[target] = decision
         return True if outcome is DecisionOutcome.ALLOW else decision.reason
 
     return guard

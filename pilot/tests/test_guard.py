@@ -32,13 +32,13 @@ async def _rows(session) -> list[Action]:
 async def test_gate_denies_target_not_in_allow_set(session) -> None:
     calls: list[str] = []
 
-    async def restart_app(app: str) -> str:
+    async def restart(app: str) -> str:
         """Restart one app."""
         calls.append(app)
         return "restarted"
 
     guard = make_guard(session, allow=set(), run_result={})
-    tool = guarded_tool(restart_app, guard=guard)
+    tool = guarded_tool(restart, guard=guard)
 
     res = await tool.call({"app": "relnotes"})
     assert res.startswith("BLOCKED:") and "not an approved target" in res
@@ -46,21 +46,21 @@ async def test_gate_denies_target_not_in_allow_set(session) -> None:
 
     rows = await _rows(session)
     assert [r.decision for r in rows] == ["deny"]
-    assert rows[0].target == "relnotes" and rows[0].tool == "restart_app"
+    assert rows[0].target == "relnotes" and rows[0].tool == "restart"
     assert rows[0].principal == "ops-agent:pilot"
 
 
 async def test_gate_allows_warn_or_down_target(session) -> None:
     calls: list[str] = []
 
-    async def restart_app(app: str) -> str:
+    async def restart(app: str) -> str:
         """Restart one app."""
         calls.append(app)
         return "restarted skillforge"
 
     run_result: dict[str, str] = {}
     guard = make_guard(session, allow={"skillforge"}, run_result=run_result)
-    tool = guarded_tool(restart_app, guard=guard)
+    tool = guarded_tool(restart, guard=guard)
 
     res = await tool.call({"app": "skillforge"})
     assert res == "restarted skillforge" and calls == ["skillforge"]

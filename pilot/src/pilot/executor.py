@@ -1,18 +1,19 @@
-"""The seam where Sconix's shared action executor plugs in.
+"""The seam where Sconix's manifest executor plugs in.
 
-Pilot's gate and verify step never touch `_restart_cmd` or an `ActionSpec`
-directly — they go through the `ActionExecutor` Protocol below. Today it's
-satisfied by `LocalExecutor` (one action, from `pilot.act`). Slice 4 swaps in
-`sconixcore`'s manifest-backed executor in one line — see
+Pilot's gate, action call, and verify step route through the `ActionExecutor`
+Protocol below — nothing touches `_restart_cmd` or a hand-built `ActionSpec`
+directly. Today it's `LocalExecutor` (one action, from `pilot.act`); the swap is
+`DEFAULT = <sconixcore ManifestExecutor>` once Codex ships it. See
 `PILOT_SLICE4_ADAPTER.md`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-from sconixcore import ActionSpec
+from sconixcore import ActionSpec, Decision, Principal
 
 from pilot import act
 
@@ -27,33 +28,48 @@ class ExecResult:
 
 @runtime_checkable
 class ActionExecutor(Protocol):
-    """What Pilot needs from an action source. `sconixcore` will satisfy this
-    from a project's `sconix.yaml`; `LocalExecutor` satisfies it from `pilot.act`
-    until then."""
+    """What Pilot needs from an action source. `sconixcore` satisfies this from
+    a target's `sconix.yaml` (`resolve_action` / `execute_action`);
+    `LocalExecutor` satisfies it from `pilot.act` until then."""
 
-    def lookup(self, name: str) -> ActionSpec | None:
-        """The declared action spec, or None if the project doesn't declare it."""
+    def lookup(self, target: str, name: str) -> ActionSpec | None:
+        """The action as declared in ``target``'s manifest, or None."""
         ...
 
-    async def execute(self, name: str, *, target: str, **args: Any) -> ExecResult:
-        """Bind args into the action's argv (no shell) and run it. Raises
-        `KeyError` if the action isn't declared."""
+    async def execute(
+        self,
+        target: str,
+        name: str,
+        *,
+        principal: Principal,
+        decision: Decision | None = None,
+        arguments: Mapping[str, str] | None = None,
+    ) -> ExecResult:
+        """Resolve → authorize (scope + approval/decision) → run the argv with no
+        shell. Raises on undeclared action, bad arguments, scope violation, or a
+        missing/denied approval."""
         ...
 
 
 class LocalExecutor:
-    """Throwaway shim: one action (`restart_app`) from `pilot.act.RESTART`, argv
-    from `pilot.act._restart_cmd` (honours a target's `restart:` override).
-    Replaced by `sconixcore`'s manifest executor at slice 4."""
+    """Throwaway shim: one action (`restart`) from `pilot.act.RESTART`, argv from
+    `pilot.act._restart_cmd` (honours a target's `restart:` override in
+    `targets.yaml`). No manifest, no principal/decision enforcement — that's the
+    real `sconixcore` executor's job at slice 4."""
 
-    def __init__(self) -> None:
-        self._actions = {act.RESTART.name: act.RESTART}
+    def lookup(self, target: str, name: str) -> ActionSpec | None:
+        return act.RESTART if name == act.RESTART.name else None
 
-    def lookup(self, name: str) -> ActionSpec | None:
-        return self._actions.get(name)
-
-    async def execute(self, name: str, *, target: str, **args: Any) -> ExecResult:
-        if self.lookup(name) is None:
+    async def execute(
+        self,
+        target: str,
+        name: str,
+        *,
+        principal: Principal,
+        decision: Decision | None = None,
+        arguments: Mapping[str, str] | None = None,
+    ) -> ExecResult:
+        if self.lookup(target, name) is None:
             raise KeyError(f"undeclared action {name!r}")
         argv = tuple(act._restart_cmd(target))
         out = await act.restart_app(target)
@@ -61,7 +77,7 @@ class LocalExecutor:
             ok=not out.startswith("restart failed"),
             argv=argv,
             output=out,
-            duration_ms=0,  # LocalExecutor doesn't split this out; sconixcore will
+            duration_ms=0,  # the shim doesn't split this out; sconixcore will
         )
 
 

@@ -109,14 +109,14 @@ async def test_summarize_reads_as_context(session) -> None:
 async def test_restart_cooldown_blocks_second_attempt(session) -> None:
     calls: list[str] = []
 
-    async def restart_app(app: str) -> str:
+    async def restart(app: str) -> str:
         """Restart one app."""
         calls.append(app)
         return "restarted"
 
     def gtool():
         return guarded_tool(
-            restart_app,
+            restart,
             guard=make_guard(
                 session, allow={"relnotes"}, run_result={}, cooldown_s=600, principal=PILOT
             ),
