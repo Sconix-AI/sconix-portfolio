@@ -222,10 +222,29 @@ from each target's `sconix.yaml`.
 - `task demo` re-verified: the `done` audit row now shows the real subprocess
   output (`{'mode': 'healthy'}` from `python -m pilot.drill heal`).
 
+## Slice 4b — deploy/rollback proposal + human-approval boundary
+
+`pilot/deploy.py` + `tests/test_deploy.py` (32 tests). Incident state machine
+gains **`awaiting_approval`** (`proposed → awaiting_approval → approved`);
+`Incident.plan_id` + `Action.plan_id` added.
+
+- `propose` runs `<kind>_plan` (`approval: never`) → parses the plan id → parks
+  the incident. `approval_status` reads `$SCONIX_STATE_DIR/deploy/*` via
+  `sconixcore.deploy` (Pilot never writes). `execute_approved` runs `<kind>`
+  only when a human approval exists, with an `allow-once` Decision naming the
+  approver.
+- Built against snake_case command keys (`deploy_plan`, …); the real app
+  manifests still say `deploy-plan` — **do not wire `deploy.py` into a real
+  manifest until Codex's rename commit.**
+- Canary held — shared edge aliases make parallel canaries unsafe until Codex
+  ships release-scoped aliases.
+
 Still felt:
 
 17. **`RESTART` ActionSpec in `pilot/act.py` is now only used for its `.name`.**
-    The real contract lives in the manifest. Could drop it for a bare
-    `RESTART_ACTION = "restart"` (already added) once nothing reads the spec.
-18. **`resolve_target` re-reads + re-parses `targets.yaml` on every call.**
-    Fine at this scale; a cache keyed on mtime if the fleet grows.
+    The real contract lives in the manifest.
+18. **`resolve_target` re-reads `targets.yaml` on every call.** Fine at this
+    scale; cache on mtime if the fleet grows.
+19. **No watch-loop trigger for deploy/rollback yet (slice 4c).** `propose` /
+    `execute_approved` are a library; nothing decides *when* rollback beats
+    restart, or polls `awaiting_approval` incidents for a fresh approval.

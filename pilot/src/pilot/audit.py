@@ -27,7 +27,8 @@ class Action(SQLModel, table=True):
     principal: str = "ops-agent:pilot"  # who caused this
     tool: str
     args: str = "{}"  # json
-    decision: str  # allowed | denied | done | failed
+    decision: str  # allow | deny | planned | done | failed
+    plan_id: str | None = Field(default=None, index=True)  # deploy/rollback plan, if any
     reason: str = ""
     result: str = ""
     duration_ms: int = 0

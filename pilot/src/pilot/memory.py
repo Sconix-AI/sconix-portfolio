@@ -3,17 +3,19 @@
 An incident moves through an explicit state machine:
 
     detected -> diagnosed -> proposed -> approved -> acted -> verified -> resolved
-                    |            |           |         |
-                    +----------- escalated <-+---------+     (needs a human)
+                    |            |   \\                 |
+                    |            |    -> awaiting_approval -> approved (human said yes)
+                    +----------- escalated <------------+     (needs a human)
 
 - **detected**  first non-ok observation opens the incident
 - **diagnosed** the assessor produced a severity + headline + detail (+ confidence)
-- **proposed**  the fix agent proposed an action (a restart)
-- **approved**  the policy gate allowed it
+- **proposed**  the fix agent proposed an action (a restart, or a deploy/rollback plan)
+- **awaiting_approval**  a deploy/rollback *plan* exists; a human must `sx approve` it
+- **approved**  the policy gate (restart) or a human approval (deploy/rollback) cleared it
 - **acted**     the action ran
 - **verified**  a *later* probe confirms the target is healthy again
 - **resolved**  closed — either verified, or it recovered on its own
-- **escalated** the gate refused, or the agent judged no safe action exists
+- **escalated** the gate refused, the plan went stale, or no safe action exists
 
 Every incident records the `Principal` that caused it. Sources of truth are this
 table plus `Action` (audit) and `AgentRun` (cost/tokens) — not chat logs.
@@ -30,19 +32,21 @@ from sqlmodel import Field, SQLModel, select
 DETECTED = "detected"
 DIAGNOSED = "diagnosed"
 PROPOSED = "proposed"
+AWAITING_APPROVAL = "awaiting_approval"
 APPROVED = "approved"
 ACTED = "acted"
 VERIFIED = "verified"
 RESOLVED = "resolved"
 ESCALATED = "escalated"
 
-_OPEN_STATES = {DETECTED, DIAGNOSED, PROPOSED, APPROVED, ACTED, ESCALATED}
+_OPEN_STATES = {DETECTED, DIAGNOSED, PROPOSED, AWAITING_APPROVAL, APPROVED, ACTED, ESCALATED}
 
 # forward-only; escalate is reachable from any open working state
 _ALLOWED: dict[str, set[str]] = {
     DETECTED: {DIAGNOSED, ESCALATED, RESOLVED},
     DIAGNOSED: {PROPOSED, ESCALATED, RESOLVED},
-    PROPOSED: {APPROVED, ESCALATED, RESOLVED},
+    PROPOSED: {AWAITING_APPROVAL, APPROVED, ESCALATED, RESOLVED},
+    AWAITING_APPROVAL: {APPROVED, ESCALATED, RESOLVED},  # human approves, or it goes stale
     APPROVED: {ACTED, ESCALATED},
     ACTED: {VERIFIED, ESCALATED, DIAGNOSED},  # DIAGNOSED = still bad next tick
     VERIFIED: {RESOLVED},
@@ -80,6 +84,7 @@ class Incident(SQLModel, table=True):
     diagnosis: str = ""
     confidence: float | None = None
     resolution: str = ""
+    plan_id: str | None = Field(default=None, index=True)  # a deploy/rollback plan, if any
 
     @property
     def open(self) -> bool:

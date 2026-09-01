@@ -8,13 +8,17 @@ approval, and verification for `restart` all come from each target's
 ## The seam — `pilot/executor.py`
 
 ```python
-ExecResult = sconixcore.ExecutionResult   # .ok / .argv / .output / .duration_ms
+ExecResult = sconixcore.ExecutionResult  # .ok / .argv / .output / .duration_ms
+
 
 @runtime_checkable
 class ActionExecutor(Protocol):
     def lookup(self, target: str, name: str) -> ActionSpec | None: ...
     async def execute(
-        self, target: str, name: str, *,
+        self,
+        target: str,
+        name: str,
+        *,
         principal: Principal,
         decision: Decision | None = None,
         arguments: Mapping[str, str] | None = None,
@@ -91,9 +95,28 @@ The drill demo generates a temporary `sconix.yaml` (a `restart` command whose
 | verified recovery resolves the incident | `test_memory.py::test_verify_and_resolve_after_action` |
 | cooldown blocks a 2nd action | `test_memory.py::test_restart_cooldown_blocks_second_attempt` |
 
-## Deferred to the deploy / rollback integration (not `restart`)
+## Slice 4b — deploy / rollback through the human-approval boundary
 
-- **Stale / expired approval, one-time consumption** — matters for
-  `deploy` / `rollback` (`approval: always`), which Pilot holds until it consumes
-  `sx deploy --plan` / `sx approve` / `sx rollback` through this same seam.
-- **argv arguments beyond the implicit `{project}`** — `plan_id`, `release`.
+`pilot/deploy.py` (against the snake_case `deploy_plan` / `rollback_plan` /
+`deploy` / `rollback` command keys — real app manifests adopt them in a Codex
+commit):
+
+- **`propose(...)`** — runs `<kind>_plan` (`approval: never`), parses the plan id
+  from stdout, records `Action(decision="planned", plan_id=…)`, moves the
+  incident to **`awaiting_approval`**. Pilot then stops.
+- **`approval_status(plan_id)`** — reads Sconix's plan store
+  (`$SCONIX_STATE_DIR/deploy/{approvals,executions}` via `sconixcore.deploy`):
+  `pending` / `approved` / `consumed`. Pilot **never** writes there.
+- **`execute_approved(...)`** — only if `approved`: builds an `allow-once`
+  `Decision` naming the human approver from the record, runs `<kind>`
+  (`approval: always`) with `arguments={plan_id, …}`, records
+  `done`/`failed`/`denied`, moves the incident to `acted` or `escalated`.
+- Pilot **never** calls `sx approve`.
+
+Tests: `tests/test_deploy.py`, temp `SCONIX_STATE_DIR`, fake executor — never a
+live server. Covers propose → park, status transitions, denied-while-pending,
+runs-when-approved, consumed → escalate, failed plan → escalate.
+
+**Not yet:** the watch loop has no policy for *when* to propose a deploy/rollback
+(vs. a restart) — that's slice 4c. **Canary is blocked** pending Codex's
+release-scoped aliases.

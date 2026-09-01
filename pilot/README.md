@@ -100,7 +100,8 @@ negative case: the agent reads it as an outage and declines to restart on its ow
 | 3.8 ✅ | consume `sconixcore` (`Principal` / `ActionSpec` / `Decision` / `Verification`); retry-aware verify | (none — Codex's Phase 2 contracts, now a real consumer) |
 | 3.9 ✅ | the **executor seam** — `ActionExecutor` Protocol; gate reads `approval` from the action spec | (spec'd in `PILOT_SLICE4_ADAPTER.md`) |
 | 4a ✅ | consume **`sconixcore.ManifestExecutor`** — `restart`'s argv/risk/approval/verify come from each target's `sconix.yaml`; `_restart_cmd` deleted | Codex's `ManifestExecutor` (Systems `5e92d6f`) |
-| 4b | deploy / canary / auto-rollback through the same seam | `sx deploy --plan` / `approve` / `rollback` / canary — **Codex's Phase 3, in progress** |
+| 4b ✅ | **deploy / rollback proposal + human-approval wait** — `propose` a plan → incident `awaiting_approval` → after a human `sx approve`, `execute_approved`; Pilot never approves | Codex's plan store (`sconixcore.deploy`, `sx deploy --plan` / `approve`) |
+| 4c | watch-loop policy for *when* to propose deploy/rollback; **canary** | canary blocked on Codex's release-scoped aliases |
 | 5 | public status page | an incident/status package |
 
 ## For the platform
