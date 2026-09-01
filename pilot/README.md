@@ -7,6 +7,10 @@ side effects, built on the Sconix Systems engine (`sconixapp`, `sx`, the shared
 Caddy edge). It grows one slice at a time; each slice that hurts feeds a fix back
 into the engine.
 
+**Operators:** see [`RUNBOOK.md`](RUNBOOK.md) — the safety contract, incident
+states, the approval flow, the canary → promote → rollback → teardown playbook,
+failure cases, and the canary/database limitations.
+
 ## Where it is now — the agent operating loop, end to end
 
 ```
@@ -103,12 +107,15 @@ negative case: the agent reads it as an outage and declines to restart on its ow
 | 4b ✅ | **deploy / rollback proposal + human-approval wait** — `propose` a plan → incident `awaiting_approval` → after a human `sx approve`, `execute_approved`; Pilot never approves | Codex's plan store (`sconixcore` `load_record`, `sx deploy --plan` / `approve`) |
 | 4c ✅ | in the **watch loop** — `--allow-rollback` proposes a `rollback_plan` once a restart is exhausted (`should_rollback` policy); `resume_if_approved` executes it the tick a human approves | — |
 | 4d ✅ | **canary lifecycle** — `propose`/`execute_approved` generalised to `canary` / `promote` / `canary_teardown` (operator-initiated, own fresh approval each); the autonomous loop still only ever proposes `rollback` (`AUTONOMOUS_KINDS`) | Codex's `sx promote` / `sx teardown` (Systems `7e33ac6`) |
+| — ✅ | **autonomous behaviour frozen** + [`RUNBOOK.md`](RUNBOOK.md) — the F1 operator runbook | — |
 | 5 | public status page | an incident/status package |
 
-## For the platform
+## Docs
 
-- `PILOT_REQUIREMENTS.md` — the concrete "Pilot needs from Sconix" contract
-  (checkpoint 1 artifact; pairs with the constitution / glossary / manifest schema).
+- **`RUNBOOK.md`** — operator runbook: safety contract, incident states, approval
+  flow, canary/promote/rollback/teardown playbook, failure cases, DB limits.
+- `PILOT_REQUIREMENTS.md` — the "Pilot needs from Sconix" contract (checkpoint 1;
+  pairs with the constitution / glossary / manifest schema).
 - `PILOT_SLICE4_ADAPTER.md` — the `ActionExecutor` seam and how
-  `sconixcore.ManifestExecutor` is wired in.
-- `NOTES.md` — running friction log, items #1–18.
+  `sconixcore.ManifestExecutor` + the deploy/rollback/canary flow are wired in.
+- `NOTES.md` — running friction log, items #1–22.
