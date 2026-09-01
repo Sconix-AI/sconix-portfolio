@@ -58,3 +58,31 @@ Still felt, not yet fixed:
 8. **No way to exercise the down→act path E2E without breaking prod.** Need a
    chaos/drill harness (a throwaway target, or `sx` pause) so slice 3's
    autonomous loop can be tested against a real failure. → `pilot` backlog.
+
+## Slice 3 — unattended loop + memory
+
+Built entirely in `pilot` (Codex was editing `~/systems` — no engine changes
+this round, on purpose):
+
+- **`pilot/memory.py`** — `Incident` table + `observe()` / `history()` /
+  `summarize()`. The assessor now gets prior-incident context; a target that's
+  been down six ticks is described differently from a first blip.
+- **restart cooldown** — `make_guard(cooldown_s=600)` denies a second
+  `restart_app` for the same target inside the window (reads the `Action` log).
+  Stops a wedged app from being restart-looped every tick.
+- **`watch` mode** — `tick()` on a timer, one line per tick, `Ctrl-C` clean.
+  Ran live: 3 ticks / 22 s against the real fleet, all `ok`.
+- 9 pilot tests (3 probe, 3 guard, 3 memory).
+
+Still felt:
+
+9. **`PRINCIPAL = "system:pilot"` is still a bare string.** `run_agent` wants a
+   `user_id`; an unattended loop has none, so every `AgentRun` row is filed under
+   a magic string and `pick_model`'s per-user ceiling is dead weight. This is the
+   slice-1 gap #1, now load-bearing. → engine: `sconixapp.agent` accepts a
+   `Principal` (user | service), and budget ceilings attach to the principal.
+10. **`watch` has no backoff or jitter.** Fixed interval; a flapping fleet gets
+    hammered at the same cadence as a calm one. Fine for a demo, wrong for real.
+    → `pilot` backlog (slice 4/5).
+11. **Incident memory never forgets.** No retention / rollup; `pilot.db` grows
+    forever. → `pilot` backlog: close-out summaries + prune.

@@ -67,7 +67,7 @@ async def test_gate_allows_warn_or_down_target(session) -> None:
 
     rows = await _rows(session)
     assert [r.decision for r in rows] == ["allowed"]
-    assert rows[0].reason == "warn/down + --fix"
+    assert rows[0].reason.startswith("warn/down + --fix")
 
 
 async def test_gate_denies_unknown_tool(session) -> None:

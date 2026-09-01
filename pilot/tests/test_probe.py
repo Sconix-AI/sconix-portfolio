@@ -92,7 +92,7 @@ async def test_assess_records_an_agent_run(session) -> None:
         httpx.MockTransport(lambda r: httpx.Response(200, json={"status": "ok"})),
     )
     client = _FakeClient('{"severity":"ok","headline":"all green","detail":"both 200."}')
-    verdict, cost = await assess(client, session, obs)
+    verdict, cost = await assess(client, session, obs, "no prior incidents for this target")
     assert verdict["severity"] == "ok"
     assert cost >= 0.0
 
