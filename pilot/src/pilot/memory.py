@@ -85,7 +85,8 @@ class Incident(SQLModel, table=True):
     confidence: float | None = None
     resolution: str = ""
     plan_id: str | None = Field(default=None, index=True)  # a deploy/rollback plan, if any
-    plan_kind: str | None = None  # "deploy" | "rollback"
+    plan_kind: str | None = None  # deploy | rollback | canary | promote | canary_teardown
+    plan_args: str = "{}"  # json: declared args to replay into the apply action
 
     @property
     def open(self) -> bool:

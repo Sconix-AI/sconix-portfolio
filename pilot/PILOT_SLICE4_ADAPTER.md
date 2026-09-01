@@ -134,5 +134,20 @@ runs-when-approved, consumed → escalate, failed plan → escalate.
 - `--allow-rollback` is off by default — like `--fix`, arming autonomous
   proposals is explicit.
 
-**Canary is blocked** — `canary_plan` / `canary` exist but Pilot must not promote
-or switch production traffic; waiting on Codex's release-scoped aliases.
+## Slice 4d — canary lifecycle
+
+`propose` / `execute_approved` / `resume_if_approved` are generalised over
+`Kind = deploy | rollback | canary | promote | canary_teardown`. All follow the
+one path: `<kind>_plan` (`approval: never`) → a human `sx approve` → `<kind>`
+(`approval: always`), audited on the incident.
+
+- **`AUTONOMOUS_KINDS = {"rollback"}`** — the watch loop only ever *proposes*
+  rollback. Canary / promote / teardown are **operator-initiated**: a human calls
+  `propose`, Pilot relays the approved execution. Pilot never auto-promotes or
+  tears down.
+- **`Incident.plan_args`** carries the declared args (`canary_plan_id`,
+  `release`) forward so `resume_if_approved` replays them into the apply action.
+  Promotion carries its own fresh approval bound to the verified canary.
+- Canary data is isolated — a canary does not carry production DB state.
+
+Not yet: a `pilot op` CLI to drive the lifecycle by hand (library-only for now).

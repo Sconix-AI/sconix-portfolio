@@ -56,13 +56,11 @@ class DeployExecutor:
         self.calls: list[tuple[str, str, dict]] = []
 
     def lookup(self, target: str, name: str) -> ActionSpec | None:
-        modes = {
-            "deploy_plan": ApprovalMode.NEVER,
-            "rollback_plan": ApprovalMode.NEVER,
-            "deploy": ApprovalMode.ALWAYS,
-            "rollback": ApprovalMode.ALWAYS,
-        }
-        return _spec(name, modes[name]) if name in modes else None
+        if name.endswith("_plan"):
+            return _spec(name, ApprovalMode.NEVER)
+        if name in ("deploy", "rollback", "canary", "promote", "canary_teardown"):
+            return _spec(name, ApprovalMode.ALWAYS)
+        return None
 
     async def execute(self, target, name, *, principal, decision=None, arguments=None):
         self.calls.append((target, name, dict(arguments or {})))
@@ -276,6 +274,47 @@ async def test_resume_executes_once_approved(session, _state_dir) -> None:
     assert call[2] == {"plan_id": PLAN_ID, "release": "v1.2.2"}
     inc = await session.get(Incident, inc.id)
     assert inc.state == ACTED
+
+
+# --- canary / promote / teardown (operator-initiated, same approval path) ------
+
+
+async def test_canary_lifecycle_kinds_share_the_propose_path(session) -> None:
+    from pilot.deploy import AUTONOMOUS_KINDS
+
+    assert AUTONOMOUS_KINDS == frozenset({"rollback"})  # loop never proposes canary/promote
+
+    inc = await _proposed_incident(session, target="skillforge")
+    ex = DeployExecutor()
+    plan_id = await propose(
+        session, ex, target="skillforge", kind="canary", principal=_pilot(), incident=inc
+    )
+    assert plan_id == PLAN_ID
+    assert ("skillforge", "canary_plan", {}) in ex.calls
+    inc = await session.get(Incident, inc.id)
+    assert inc.state == AWAITING_APPROVAL and inc.plan_kind == "canary"
+
+
+async def test_promote_replays_stored_args_on_approval(session, _state_dir) -> None:
+    inc = await _proposed_incident(session, target="relnotes")
+    ex = DeployExecutor()
+    await propose(
+        session,
+        ex,
+        target="relnotes",
+        kind="promote",
+        principal=_pilot(),
+        incident=inc,
+        arguments={"canary_plan_id": "cafebabecafebabecafe"},
+    )
+    inc = await session.get(Incident, inc.id)
+    assert json.loads(inc.plan_args) == {"canary_plan_id": "cafebabecafebabecafe"}
+
+    _write(_state_dir, "approvals", PLAN_ID, _approval())
+    ok = await resume_if_approved(session, ex, target="relnotes", incident=inc, principal=_pilot())
+    assert ok is True
+    promote_call = [c for c in ex.calls if c[1] == "promote"][0]
+    assert promote_call[2] == {"plan_id": PLAN_ID, "canary_plan_id": "cafebabecafebabecafe"}
 
 
 # --- helpers ------------------------------------------------------------------

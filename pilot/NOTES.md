@@ -263,3 +263,30 @@ Still felt:
     *denied before it ever ran`** (`acted_at` is None) — intentional (don't
     rollback if the cheap fix was never tried), but worth a second look with a
     real failure.
+
+## Slice 4d — canary lifecycle
+
+`propose` / `execute_approved` / `resume_if_approved` generalised over
+`Kind = deploy | rollback | canary | promote | canary_teardown` — `<kind>_plan`
+(`approval: never`) → human `sx approve` → `<kind>` (`approval: always`). Same
+audit trail, same `awaiting_approval` state.
+
+- **`AUTONOMOUS_KINDS = {"rollback"}`** — the watch loop only ever *proposes*
+  rollback. `canary` / `promote` / `canary_teardown` are operator-initiated:
+  a human calls `propose`, Pilot only relays the approved execution.
+- **Promotion gets its own fresh approval** bound to the verified canary — the
+  manifest's `promote` declares `arguments: [canary_plan_id, plan_id]`.
+- **`Incident.plan_args`** (json) stores the declared args at propose time so
+  `resume_if_approved` can replay `canary_plan_id` / `release` into the apply
+  action.
+- 38 tests.
+
+Still felt:
+
+21. **No `pilot op` CLI yet** — canary/promote/teardown are library calls; an
+    operator entrypoint (`pilot op <target> canary` → `sx approve` →
+    `pilot op <target> resume`) is a thin add, deferred until there's a real
+    canary to drive.
+22. **Canary data is isolated** (Codex's note) — Pilot's diagnosis/messaging
+    should say a canary does *not* carry production DB state; not yet reflected
+    in any prompt.

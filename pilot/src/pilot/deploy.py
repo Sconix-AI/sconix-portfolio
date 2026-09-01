@@ -11,6 +11,7 @@ records the plan id and the outcome on its own incident/audit trail.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -35,10 +36,14 @@ from pilot.memory import (
     transition,
 )
 
-DEPLOY_PLAN = "deploy_plan"
-ROLLBACK_PLAN = "rollback_plan"
-DEPLOY = "deploy"
-ROLLBACK = "rollback"
+# kind -> plan action is `<kind>_plan` (approval: never); apply action is `<kind>`
+# (approval: always). All follow the same propose -> human-approve -> execute path.
+Kind = Literal["deploy", "rollback", "canary", "promote", "canary_teardown"]
+
+# Only rollback is ever proposed by the autonomous loop (and only with
+# --allow-rollback). canary / promote / canary_teardown are operator-initiated:
+# a human kicks off `propose`, Pilot only relays the approved execution.
+AUTONOMOUS_KINDS: frozenset[str] = frozenset({"rollback"})
 
 _PLAN_ID = re.compile(r"\b([0-9a-f]{20})\b")  # sconixcore plan ids: 20 hex chars
 
@@ -94,14 +99,16 @@ async def propose(
     executor: Any,
     *,
     target: str,
-    kind: Literal["deploy", "rollback"],
+    kind: Kind,
     principal: Principal,
     incident: Any,
     arguments: dict[str, str] | None = None,
 ) -> str:
     """Run ``<kind>_plan``, record the plan id, park the incident on
-    ``awaiting_approval``. Returns the plan id."""
-    plan_action = DEPLOY_PLAN if kind == "deploy" else ROLLBACK_PLAN
+    ``awaiting_approval``. Returns the plan id. `canary` / `promote` /
+    `canary_teardown` are operator-initiated — the watch loop only ever calls
+    this with ``kind="rollback"``."""
+    plan_action = f"{kind}_plan"
     if incident.state != PROPOSED:
         await transition(session, incident, PROPOSED)
     res = await executor.execute(target, plan_action, principal=principal, arguments=arguments)
@@ -135,6 +142,7 @@ async def propose(
         AWAITING_APPROVAL,
         plan_id=plan_id,
         plan_kind=kind,
+        plan_args=json.dumps(arguments or {}),
         resolution=f"awaiting human approval — sx approve {plan_id}",
     )
     return plan_id
@@ -155,6 +163,7 @@ async def resume_if_approved(
         return None
     if approval_status(incident.plan_id) != "approved":
         return None
+    stored = json.loads(incident.plan_args or "{}")
     return await execute_approved(
         session,
         executor,
@@ -163,7 +172,7 @@ async def resume_if_approved(
         plan_id=incident.plan_id,
         principal=principal,
         incident=incident,
-        arguments=arguments,
+        arguments={**stored, **(arguments or {})},
     )
 
 
@@ -172,7 +181,7 @@ async def execute_approved(
     executor: Any,
     *,
     target: str,
-    kind: Literal["deploy", "rollback"],
+    kind: Kind,
     plan_id: str,
     principal: Principal,
     incident: Any,
@@ -180,7 +189,8 @@ async def execute_approved(
 ) -> bool:
     """If a human has approved ``plan_id``, run the ``<kind>`` action with it.
     Records stale / consumed / denied / failed / verified. Returns True on a
-    verified success."""
+    verified success. Works for any kind — promotion needs its **own** fresh
+    approval, bound to the verified canary."""
     status = approval_status(plan_id)
     if status != "approved":
         await record(
@@ -196,8 +206,6 @@ async def execute_approved(
         if status == "consumed":
             await transition(session, incident, ESCALATED, resolution="plan already consumed")
         return False
-
-    from sconixcore.deploy import load_record
 
     approver = _principal_from(load_record("approvals", plan_id))
     decision = Decision(
