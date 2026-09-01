@@ -1,13 +1,14 @@
-"""Incident lifecycle + the restart cooldown (slices 3 / 4)."""
+"""Incident lifecycle + the restart cooldown."""
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 from sconixapp.agent import guarded_tool
-from sconixapp.db import dispose_engine, get_engine, get_session, init_engine
-from sqlmodel import SQLModel, select
+from sqlmodel import select
 
-from pilot.act import make_guard
+from pilot.act import make_guard as _make_guard
 from pilot.audit import Action
 from pilot.memory import (
     ACTED,
@@ -23,22 +24,10 @@ from pilot.memory import (
     transition,
 )
 from pilot.principal import PILOT
+from tests.conftest import FakeExecutor
 
 WHO = "ops-agent:pilot"
-
-
-@pytest.fixture()
-async def session():
-    init_engine("sqlite+aiosqlite:///:memory:")
-    async with get_engine().begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
-    agen = get_session()
-    s = await agen.__anext__()
-    try:
-        yield s
-    finally:
-        await s.rollback()
-        await dispose_engine()
+make_guard = functools.partial(_make_guard, executor=FakeExecutor())
 
 
 async def _drive_to_acted(session, target="drill"):

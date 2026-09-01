@@ -1,35 +1,21 @@
-"""The mutating half: one typed action, behind a policy gate.
+"""The policy gate around the agent's one mutating action.
 
-`RESTART` is a `sconixcore.ActionSpec` — the action's contract (risk, approval,
-verification, side effects) declared once. `restart_app` executes it;
-`make_guard` returns the gate `sconixapp.agent.guarded_tool` calls first, which
-now records a `sconixcore.Decision` (outcome + accountable principal) per check.
-
-Pilot keeps its own policy (allow-set + cooldown) local — that's still one
-policy for one action; the reusable contract is the types, not the rule.
+Execution (argv, no-shell, authz) is `sconixcore.ManifestExecutor`'s job, driven
+by each target's `sconix.yaml`. This module only decides *whether* an action may
+run: it looks the action up via the executor, honours `spec.approval`, and adds
+Pilot's local rule (allow-set + cooldown + principal scope), recording a
+`sconixcore.Decision` per check.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-import shlex
-import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import yaml
-from sconixcore import (
-    ActionSpec,
-    ApprovalMode,
-    Decision,
-    DecisionOutcome,
-    Principal,
-    Risk,
-    Verification,
-)
+from sconixcore import ApprovalMode, Decision, DecisionOutcome, Principal
 from sqlmodel import select
 
 if TYPE_CHECKING:
@@ -39,57 +25,10 @@ from pilot.audit import Action, record
 from pilot.principal import PILOT, label
 
 COOLDOWN_S = 600  # don't restart the same target twice within 10 min
+RESTART_ACTION = "restart"  # the manifest command name
 
-# run.py points this at the active targets file; a target may carry its own
-# `restart:` command (the drill target heals itself that way). Absent -> the
-# real fleet default, `sx restart <app>`.
+# run.py sets this to the active targets file; pilot.manifest.resolve_target reads it.
 TARGETS_PATH: Path | None = None
-
-RESTART = ActionSpec(
-    name="restart",  # matches the `restart` command in a project's sconix.yaml
-    argv=("sx", "restart", "{project}"),  # representative; LocalExecutor uses _restart_cmd()
-    risk=Risk.EXTERNAL_WRITE,
-    idempotent=True,
-    approval=ApprovalMode.POLICY,
-    verification=Verification(
-        checks=("healthz", "readyz"),
-        within_seconds=30,
-        attempts=3,
-        interval_seconds=2,
-    ),
-    side_effects=("in-place container restart on a remote host, no rebuild",),
-    preconditions=(
-        "target assessed warn/down this run",
-        "cooldown clear",
-        "principal in scope",
-    ),
-    rollback=None,
-)
-
-
-def _restart_cmd(app: str) -> list[str]:
-    if TARGETS_PATH and TARGETS_PATH.exists():
-        for t in yaml.safe_load(TARGETS_PATH.read_text()).get("targets", []):
-            if t.get("name") == app and t.get("restart"):
-                return shlex.split(t["restart"])
-    return ["sx", "restart", app]
-
-
-async def restart_app(app: str) -> str:
-    """Restart one deployed app in place (no rebuild). Mutating — see RESTART."""
-    cmd = _restart_cmd(app)
-    started = time.monotonic()
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    out, _ = await proc.communicate()
-    ms = int((time.monotonic() - started) * 1000)
-    tail = out.decode()[-500:].strip()
-    if proc.returncode != 0:
-        return f"restart failed (exit {proc.returncode}) after {ms}ms:\n{tail}"
-    return f"restarted {app} in {ms}ms via `{' '.join(cmd)}`:\n{tail}"
 
 
 Guard = Callable[[str, dict[str, Any]], Awaitable[bool | str]]
@@ -103,7 +42,7 @@ async def _restarted_within(session: Any, target: str, seconds: int) -> bool:
                 select(Action)
                 .where(
                     Action.target == target,
-                    Action.tool == RESTART.name,
+                    Action.tool == RESTART_ACTION,
                     Action.decision == DecisionOutcome.ALLOW.value,
                     Action.created_at >= cutoff,
                 )
@@ -123,8 +62,8 @@ def make_guard(
     run_result: dict[str, str],
     principal: Principal = PILOT,
     incidents: dict[str, int] | None = None,
+    executor: ActionExecutor,
     cooldown_s: int = COOLDOWN_S,
-    executor: ActionExecutor | None = None,
     decisions: dict[str, Decision] | None = None,
 ) -> Guard:
     """Gate for the agent's mutating tool. The action must be **declared** in the
@@ -138,9 +77,6 @@ def make_guard(
     Records a `sconixcore.Decision` per check. ``run_result[target]`` gets the
     outcome string; ``decisions[target]`` (if given) gets the `Decision` object,
     which `execute()` needs to authorize the action."""
-
-    if executor is None:
-        from pilot.executor import DEFAULT as executor
 
     incidents = incidents or {}
     decisions = decisions if decisions is not None else {}

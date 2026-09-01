@@ -9,6 +9,7 @@ Costs a few cents (haiku assess + sonnet fix, 4 ticks)."""
 from __future__ import annotations
 
 import asyncio
+import sys
 import tempfile
 import threading
 from http.server import ThreadingHTTPServer
@@ -21,6 +22,21 @@ from pilot import act, drill
 from pilot.audit import Action
 from pilot.memory import Incident
 from pilot.run import _client, load_targets, tick
+
+_DRILL_MANIFEST = """\
+schema: sconix.dev/project/v1
+kind: application
+name: Drill
+slug: drill
+lifecycle: {{status: live}}
+commands:
+  restart:
+    run: ["{py}", -m, pilot.drill, heal, --port, "{port}"]
+    risk: external-write
+    approval: policy
+    idempotent: true
+    verify: {{checks: [healthz, readyz], withinSeconds: 8, attempts: 4, intervalSeconds: 0.5}}
+"""
 
 
 def _start_server() -> tuple[ThreadingHTTPServer, int]:
@@ -40,12 +56,15 @@ SCRIPT = [
 
 async def main() -> int:
     srv, port = _start_server()
-    tf = Path(tempfile.mkstemp(suffix=".yaml")[1])
+    tmp = Path(tempfile.mkdtemp(prefix="pilot-demo-"))
+    (tmp / "drill.sconix.yaml").write_text(_DRILL_MANIFEST.format(py=sys.executable, port=port))
+    tf = tmp / "targets.yaml"
     tf.write_text(
         "targets:\n"
         "  - name: drill\n"
         f"    url: http://127.0.0.1:{port}\n"
-        f"    restart: python -m pilot.drill heal --port {port}\n"
+        "    manifest: drill.sconix.yaml\n"
+        f"    root: {Path(__file__).resolve().parents[2]}\n"
     )
     act.TARGETS_PATH = tf
     act.COOLDOWN_S = 600
@@ -89,8 +108,10 @@ async def main() -> int:
         await session.rollback()
         await dispose_engine()
         srv.shutdown()
-        tf.unlink(missing_ok=True)
         db.unlink(missing_ok=True)
+        for p in (tf, tmp / "drill.sconix.yaml"):
+            p.unlink(missing_ok=True)
+        tmp.rmdir()
     return 0
 
 

@@ -1,6 +1,12 @@
 # The fleet the pilot watches. One block per deployed app.
+# `manifest` + `root` point at the app's sconix.yaml — the source of truth for
+# what `restart` (and later deploy/rollback) actually run.
 targets:
   - name: relnotes
     url: https://relnotes.204-168-172-115.sslip.io
+    manifest: ~/systems/apps/relnotes/sconix.yaml
+    root: ~/systems/apps/relnotes
   - name: skillforge
     url: https://skillforge.204-168-172-115.sslip.io
+    manifest: ~/systems/apps/skillforge/sconix.yaml
+    root: ~/systems/apps/skillforge

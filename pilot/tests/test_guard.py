@@ -1,28 +1,18 @@
-"""No-network tests for the policy gate + audit trail (slice 2)."""
+"""No-network tests for the policy gate + audit trail."""
 
 from __future__ import annotations
 
-import pytest
+import functools
+
 from sconixapp.agent import guarded_tool
-from sconixapp.db import dispose_engine, get_engine, get_session, init_engine
-from sqlmodel import SQLModel, select
+from sqlmodel import select
 
-from pilot.act import make_guard
+from pilot.act import make_guard as _make_guard
 from pilot.audit import Action
+from tests.conftest import FakeExecutor
 
-
-@pytest.fixture()
-async def session():
-    init_engine("sqlite+aiosqlite:///:memory:")
-    async with get_engine().begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
-    agen = get_session()
-    s = await agen.__anext__()
-    try:
-        yield s
-    finally:
-        await s.rollback()
-        await dispose_engine()
+# these tests exercise the gate's own checks; the executor just declares `restart`
+make_guard = functools.partial(_make_guard, executor=FakeExecutor())
 
 
 async def _rows(session) -> list[Action]:

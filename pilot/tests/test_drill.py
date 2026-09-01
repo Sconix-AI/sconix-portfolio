@@ -1,5 +1,5 @@
-"""The drill server toggles health; probe() must see it, and a per-target
-`restart:` command must override the `sx restart` default."""
+"""The drill server toggles health; probe() must see it, and the retry-aware
+verify loop must give up on a target that stays broken."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from pilot import act, drill
+from pilot import drill
 from pilot.probe import probe
 
 
@@ -58,39 +58,3 @@ async def test_verify_recovered_retries_then_gives_up(server) -> None:
 
     drill._poke(server, "wedged")  # healthz 503 forever
     assert await _verify_recovered(target, fast) is False
-
-
-async def test_restart_app_reports_a_failed_command(tmp_path) -> None:
-    tf = tmp_path / "t.yaml"
-    tf.write_text("targets:\n  - name: drill\n    url: http://x\n    restart: sh -c 'exit 3'\n")
-    act.TARGETS_PATH = tf
-    try:
-        out = await act.restart_app("drill")
-        assert out.startswith("restart failed (exit 3)")
-    finally:
-        act.TARGETS_PATH = None
-
-
-def test_restart_cmd_uses_per_target_override(tmp_path) -> None:
-    tf = tmp_path / "t.yaml"
-    tf.write_text(
-        "targets:\n"
-        "  - name: drill\n"
-        "    url: http://127.0.0.1:8765\n"
-        "    restart: python -m pilot.drill heal --port 8765\n"
-        "  - name: relnotes\n"
-        "    url: https://x\n"
-    )
-    act.TARGETS_PATH = tf
-    try:
-        assert act._restart_cmd("drill") == [
-            "python",
-            "-m",
-            "pilot.drill",
-            "heal",
-            "--port",
-            "8765",
-        ]
-        assert act._restart_cmd("relnotes") == ["sx", "restart", "relnotes"]  # no override
-    finally:
-        act.TARGETS_PATH = None

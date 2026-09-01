@@ -1,0 +1,19 @@
+# Manifest for the drill fake app. `restart` heals the drill server on :8765.
+# Used by drill.targets.yaml; run `task drill` (via uv/task) so `python` resolves
+# to the venv. The demo (`task demo`) generates its own with an ephemeral port.
+schema: sconix.dev/project/v1
+kind: application
+name: Drill
+slug: drill
+summary: a fake app whose health you toggle, for exercising the pilot loop
+created: 2026-09-01
+lifecycle: {status: live}
+commands:
+  restart:
+    run: [python, -m, pilot.drill, heal, --port, "8765"]
+    risk: external-write
+    approval: policy
+    idempotent: true
+    sideEffects: [reset the drill server to healthy]
+    preconditions: [target is unhealthy, restart cooldown is clear]
+    verify: {checks: [healthz, readyz], withinSeconds: 10, attempts: 3, intervalSeconds: 1}

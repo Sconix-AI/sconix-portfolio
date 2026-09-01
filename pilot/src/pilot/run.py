@@ -2,7 +2,7 @@
 
     uv run python -m pilot.run                      # one pass over every target
     uv run python -m pilot.run relnotes             # one pass, just one
-    uv run python -m pilot.run --fix                # arm restart_app (policy-gated)
+    uv run python -m pilot.run --fix                # arm the restart action (policy-gated)
     uv run python -m pilot.run watch --every 60     # run unattended on a loop
     uv run python -m pilot.run watch --fix --for 900
     uv run python -m pilot.run watch --targets drill.targets.yaml --fix   # drill
@@ -25,12 +25,13 @@ from typing import Any
 import yaml
 from sconixapp.agent import NAV, WORKER, guarded_tool, run_agent
 from sconixapp.db import dispose_engine, get_engine, get_session, init_engine
+from sconixcore import ManifestExecutor
 from sqlmodel import SQLModel
 
 from pilot import act
-from pilot.act import make_guard, restart_app
+from pilot.act import make_guard
 from pilot.audit import record
-from pilot.executor import DEFAULT as EXECUTOR
+from pilot.manifest import resolve_target
 from pilot.memory import (
     ACTED,
     APPROVED,
@@ -51,6 +52,9 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGETS = ROOT / "targets.yaml"
 DB_URL = f"sqlite+aiosqlite:///{ROOT / 'pilot.db'}"
 PRINCIPAL = label(PILOT)  # run_agent still wants a user_id string; see PILOT_REQUIREMENTS.md R1
+
+# the live seam: actions resolved + authorized + run from each target's sconix.yaml
+EXECUTOR = ManifestExecutor(resolve=resolve_target)
 
 _ASSESS_SYSTEM = """You are a release pilot watching a small fleet of deployed web apps.
 You are given one app's raw health probe and its recent incident history.
@@ -178,7 +182,7 @@ async def tick(
             return res.output
 
         _restart_and_record.__name__ = "restart"
-        _restart_and_record.__doc__ = restart_app.__doc__
+        _restart_and_record.__doc__ = "Restart one deployed app in place (no rebuild)."
 
         guard = make_guard(
             session,

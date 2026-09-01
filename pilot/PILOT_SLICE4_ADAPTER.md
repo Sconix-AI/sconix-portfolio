@@ -1,27 +1,20 @@
-# Pilot Slice 4 — the executor seam
+# Pilot Slice 4 — the executor seam (done)
 
-How Pilot consumes a manifest-declared action, and the one-line change that
-swaps today's local shim for `sconixcore`'s `ManifestExecutor`.
+Pilot consumes manifest-declared actions through `sconixcore.ManifestExecutor`
+(Systems `5e92d6f`). `_restart_cmd` / `restart_app` are gone; the argv, risk,
+approval, and verification for `restart` all come from each target's
+`sconix.yaml`. Pilot keeps only its local policy.
 
 ## The seam — `pilot/executor.py`
 
 ```python
-@dataclass(frozen=True)
-class ExecResult:
-    ok: bool
-    argv: tuple[str, ...]
-    output: str  # combined stdout+stderr, trimmed
-    duration_ms: int
-
+ExecResult = sconixcore.ExecutionResult   # .ok / .argv / .output / .duration_ms
 
 @runtime_checkable
 class ActionExecutor(Protocol):
     def lookup(self, target: str, name: str) -> ActionSpec | None: ...
     async def execute(
-        self,
-        target: str,
-        name: str,
-        *,
+        self, target: str, name: str, *,
         principal: Principal,
         decision: Decision | None = None,
         arguments: Mapping[str, str] | None = None,
@@ -29,64 +22,41 @@ class ActionExecutor(Protocol):
 ```
 
 - **`lookup(target, name)`** → the action as declared in `target`'s `sconix.yaml`
-  (`commands.<name>`), or `None`. Pilot's gate calls this to reject undeclared
-  actions and to read `risk` / `approval` / `verification`.
-- **`execute(target, name, …)`** → resolve → authorize (scope + approval) → run
-  the argv **with no shell**. Raises on undeclared action, bad arguments, scope
-  violation, or a missing/denied approval.
+  (`commands.<name>`), or `None`. The gate uses it to reject undeclared actions
+  and to read `risk` / `approval` / `verification`.
+- **`execute(target, name, …)`** → resolve → authorize (scope + approval/decision)
+  → run the argv **with no shell**. Raises `KeyError` for an undeclared
+  target/action; `ActionError` for scope / approval failure.
 
-Nothing in Pilot touches `_restart_cmd` or a hand-built `ActionSpec` any more —
-`make_guard`, `run.tick`'s executor call, and `_verify_recovered` all go through
-this Protocol. The action is named **`restart`** (matching the manifest command),
-not `restart_app`.
+`sconixcore.ManifestExecutor` is the implementation; `tests/conftest.py`'s
+`FakeExecutor` is a stub for gate tests. The action is named **`restart`**
+(matching the manifest command).
 
-## Today: `LocalExecutor` (throwaway)
+## How it's wired
 
-One action (`restart`, from `pilot.act.RESTART`), argv from
-`pilot.act._restart_cmd(target)` (honours a `restart:` override in
-`targets.yaml`). No manifest, no scope/approval enforcement. ~20 lines.
-
-## The swap — `ManifestExecutor` (Codex, `sconixcore`)
-
-`pilot/executor.py` changes one binding:
+`run.py`:
 
 ```python
-# from
-DEFAULT: ActionExecutor = LocalExecutor()
-# to
 from sconixcore import ManifestExecutor
-DEFAULT: ActionExecutor = ManifestExecutor(resolve=<target -> (manifest, root)>)
+from pilot.manifest import resolve_target
+
+EXECUTOR = ManifestExecutor(resolve=resolve_target)
 ```
 
-### What `ManifestExecutor` must do
+- **`pilot/manifest.py:resolve_target(target) -> (manifest, root)`** — reads the
+  active `targets.yaml` (`act.TARGETS_PATH`), loads the target's `manifest:` file
+  (relative paths resolve against the targets file's dir), returns the parsed
+  dict + `root:` cwd. Falls back to `~/systems/apps/<name>/sconix.yaml`.
+- **`make_guard`** calls `executor.lookup(target, "restart")`, denies undeclared
+  actions, branches on `spec.approval`, and stashes the `sconixcore.Decision` in
+  a `decisions` dict.
+- **`run.tick`** calls `EXECUTOR.execute(app, "restart", principal=principal,
+  decision=decisions[app])`. `approval: policy` **requires** that Decision —
+  `ManifestExecutor.authorize_action` raises `ActionError` without it.
+- **`_verify_recovered`** reads `EXECUTOR.lookup(target, "restart").verification`
+  for the retry/grace cadence.
 
-It wraps `sconixcore`'s function API (`resolve_action` / `authorize_action` /
-`execute_action`) behind the Protocol:
-
-| Protocol method | implementation |
-|---|---|
-| `lookup(target, name)` | `manifest, _ = resolve(target)`; `try: return resolve_action(manifest, name)` `except ActionError: return None` |
-| `execute(target, name, *, principal, decision, arguments)` | `manifest, root = resolve(target)`; run `execute_action(manifest=manifest, root=root, name=name, principal=principal, arguments=arguments, decision=decision)` **in a thread** (it's sync); wrap `ExecutionResult` → `ExecResult(ok=res.ok, argv=res.action.argv, output=(res.stdout + res.stderr).strip(), duration_ms=<measured around the runner>)` |
-
-Details that matter:
-
-1. **`resolve`** is a `target -> (manifest: Mapping, root: Path)` callable that
-   **Pilot supplies** (from `targets.yaml`; see below). `ManifestExecutor` must
-   not read Pilot's files itself.
-2. **`decision`** passed to `execute` is already a `sconixcore.Decision` — it
-   comes straight from Pilot's `make_guard`. Pass it through to `execute_action`.
-   For `approval: policy` actions Pilot's gate produces an `ALLOW` decision; for
-   `approval: never` `execute_action` needs no decision; `approval: always`
-   Pilot's gate denies before `execute` is ever called.
-3. **`arguments`** is the declared-argument map — `{}` for `restart`,
-   `{"plan_id": …}` for `deploy`, `{"release": …, "plan_id": …}` for `rollback`.
-   `resolve_action` already rejects missing/extra/embedded-placeholder args.
-4. **async** — `execute_action`'s `runner` is sync `subprocess.run`. Either wrap
-   the whole call in `asyncio.to_thread`, or add an async runner path.
-   `duration_ms` is measured by `ManifestExecutor` around the runner call.
-5. **No Pilot import.**
-
-### `targets.yaml` gains a manifest pointer
+### `targets.yaml` — the manifest pointer
 
 ```yaml
 targets:
@@ -106,19 +76,20 @@ The drill demo generates a temporary `sconix.yaml` (a `restart` command whose
 - the gate rule "`ApprovalMode.ALWAYS` → deny" — Pilot can't self-approve
   `deploy` / `rollback`; those need `sx approve` by a human.
 
-## Test coverage → Codex's checklist
+## Test coverage (`tests/`)
 
-| asked for | test (`tests/`) |
+| behaviour | test |
 |---|---|
-| action lookup by name | `test_executor.py::test_lookup_by_name` |
-| risk / approval from the manifest | `test_gate_reads_approval_never_and_allows`, `…_always_and_denies` |
-| target bound into argv, no shell | `test_execute_binds_target_into_argv_without_a_shell` |
-| principal scope enforced | `test_gate_enforces_principal_scope` |
-| executor result → verification / audit | `test_executor_result_reaches_the_audit_row`, `test_drill.py::test_verify_recovered_retries_then_gives_up` |
-| undeclared action denied / raises | `test_gate_denies_action_not_in_the_manifest`, `test_execute_undeclared_action_raises` |
-| failed execution | `test_execute_failed_command_is_not_ok` |
-| failed verification | `test_verify_recovered_retries_then_gives_up` |
-| successful recovery | `test_memory.py::test_verify_and_resolve_after_action` |
+| `ManifestExecutor` satisfies the Protocol | `test_executor.py::test_manifest_executor_satisfies_the_protocol` |
+| lookup reads the manifest | `test_lookup_reads_the_manifest` |
+| declared argv runs, no shell | `test_execute_runs_declared_argv_with_no_shell` |
+| undeclared action → `KeyError` / gate deny | `test_execute_undeclared_action_raises`, `test_gate_denies_action_not_in_the_manifest` |
+| principal scope enforced (executor + gate) | `test_execute_enforces_principal_scope`, `test_gate_enforces_principal_scope` |
+| `approval` from the manifest drives the gate | `test_gate_reads_approval_never_and_allows`, `…_always_and_denies` |
+| executor result → audit row | `test_executor_result_reaches_the_audit_row` |
+| retry/grace verification gives up | `test_drill.py::test_verify_recovered_retries_then_gives_up` |
+| verified recovery resolves the incident | `test_memory.py::test_verify_and_resolve_after_action` |
+| cooldown blocks a 2nd action | `test_memory.py::test_restart_cooldown_blocks_second_attempt` |
 
 ## Deferred to the deploy / rollback integration (not `restart`)
 

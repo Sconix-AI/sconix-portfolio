@@ -27,7 +27,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 addopts = "-q"
 asyncio_mode = "auto"
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 
 [build-system]
 requires = ["hatchling"]

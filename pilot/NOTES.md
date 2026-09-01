@@ -200,3 +200,32 @@ one-line swap, and what `sconixcore`'s executor must provide.
 
 Deferred to the deploy/rollback integration: stale/expired approval + one-time
 consumption tests (restart is `approval: policy`, so the gate is the approval).
+
+## Slice 4 — the real executor
+
+Swapped `LocalExecutor` for **`sconixcore.ManifestExecutor`** (Systems
+`5e92d6f`). `_restart_cmd` / `restart_app` and the per-target `restart:` override
+are **deleted** — `restart`'s argv, risk, approval, and verification now come
+from each target's `sconix.yaml`.
+
+- **`pilot/manifest.py:resolve_target`** — target → `(manifest, root)`, read from
+  `targets.yaml`'s `manifest:` / `root:` fields. `ManifestExecutor(resolve=…)`.
+- **`targets.yaml`** gained `manifest:` + `root:` per target (relnotes,
+  skillforge → `~/systems/apps/<name>/sconix.yaml`).
+- **the drill** gets a `sconix.yaml`: committed `drill.sconix.yaml` (port 8765)
+  for `task pilot -- watch --targets drill.targets.yaml`; the demo generates one
+  with an ephemeral port + `sys.executable`.
+- **`make_guard`** stashes the `sconixcore.Decision`; `run.tick` passes it to
+  `execute()` — `approval: policy` fails closed without it.
+- tests reorganised around `tests/conftest.py` (`FakeExecutor`, `session`); real
+  `ManifestExecutor` covered against an in-memory manifest. 26 tests.
+- `task demo` re-verified: the `done` audit row now shows the real subprocess
+  output (`{'mode': 'healthy'}` from `python -m pilot.drill heal`).
+
+Still felt:
+
+17. **`RESTART` ActionSpec in `pilot/act.py` is now only used for its `.name`.**
+    The real contract lives in the manifest. Could drop it for a bare
+    `RESTART_ACTION = "restart"` (already added) once nothing reads the spec.
+18. **`resolve_target` re-reads + re-parses `targets.yaml` on every call.**
+    Fine at this scale; a cache keyed on mtime if the fleet grows.

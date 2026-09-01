@@ -1,119 +1,100 @@
-"""Adapter tests — how Pilot consumes a manifest-declared action through the
-`ActionExecutor` seam. When `sconixcore`'s `ManifestExecutor` lands, `DEFAULT`
-is swapped and these should still pass. See PILOT_SLICE4_ADAPTER.md.
+"""Adapter tests — Pilot consuming a manifest-declared action through
+`sconixcore.ManifestExecutor` and the `ActionExecutor` seam.
+See PILOT_SLICE4_ADAPTER.md.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from pathlib import Path
+
 import pytest
 from sconixapp.agent import guarded_tool
-from sconixapp.db import dispose_engine, get_engine, get_session, init_engine
-from sconixcore import ActionSpec, ApprovalMode, PrincipalKind, Risk, Verification
-from sqlmodel import SQLModel, select
+from sconixcore import (
+    ActionError,
+    ApprovalMode,
+    Decision,
+    DecisionOutcome,
+    ExecutionResult,
+    ManifestExecutor,
+    PrincipalKind,
+)
+from sqlmodel import select
 
 from pilot import act
 from pilot.audit import Action, record
-from pilot.executor import DEFAULT, ActionExecutor, ExecResult, LocalExecutor
+from pilot.executor import ActionExecutor
 from pilot.principal import PILOT, Principal
+from tests.conftest import FakeExecutor, spec
 
-_V = Verification(checks=("healthz",), within_seconds=5, attempts=1, interval_seconds=0.01)
+# --- a real ManifestExecutor over an in-memory manifest ----------------------
 
-
-def _spec(name: str, *, approval: ApprovalMode) -> ActionSpec:
-    return ActionSpec(
-        name=name,
-        argv=("sx", name, "{project}"),
-        risk=Risk.EXTERNAL_WRITE,
-        idempotent=True,
-        approval=approval,
-        verification=_V,
-    )
-
-
-class FakeExecutor:
-    """Stands in for the future sconixcore ManifestExecutor."""
-
-    def __init__(self, specs: dict[str, ActionSpec], result: ExecResult | None = None) -> None:
-        self._specs = specs
-        self._result = result or ExecResult(True, ("sx", "restart", "x"), "restarted x", 5)
-        self.calls: list[tuple[str, str]] = []
-
-    def lookup(self, target: str, name: str) -> ActionSpec | None:
-        return self._specs.get(name)
-
-    async def execute(self, target, name, *, principal, decision=None, arguments=None):
-        if name not in self._specs:
-            raise KeyError(name)
-        self.calls.append((target, name))
-        return self._result
+_MANIFEST = {
+    "schema": "sconix.dev/project/v1",
+    "kind": "application",
+    "name": "Drill",
+    "slug": "drill",
+    "lifecycle": {"status": "live"},
+    "commands": {
+        "restart": {
+            "run": ["printf", "recovered"],
+            "risk": "external-write",
+            "approval": "policy",
+            "idempotent": True,
+            "verify": {"checks": ["healthz"], "withinSeconds": 5, "attempts": 1},
+        }
+    },
+}
 
 
-@pytest.fixture()
-async def session():
-    init_engine("sqlite+aiosqlite:///:memory:")
-    async with get_engine().begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
-    agen = get_session()
-    s = await agen.__anext__()
-    try:
-        yield s
-    finally:
-        await s.rollback()
-        await dispose_engine()
+def _resolve(target: str):
+    if target != "drill":
+        raise KeyError(target)
+    return _MANIFEST, Path.cwd()
 
 
-async def _rows(session) -> list[Action]:
-    return list((await session.execute(select(Action).order_by(Action.id))).scalars().all())
+def _mex() -> ManifestExecutor:
+    return ManifestExecutor(resolve=_resolve)
 
 
-# --- the executor itself ------------------------------------------------------
+def test_manifest_executor_satisfies_the_protocol() -> None:
+    assert isinstance(_mex(), ActionExecutor)
 
 
-def test_lookup_by_name() -> None:
-    ex = LocalExecutor()
-    assert ex.lookup("relnotes", "restart") is act.RESTART
-    assert ex.lookup("relnotes", "deploy") is None
+def test_lookup_reads_the_manifest() -> None:
+    ex = _mex()
+    action = ex.lookup("drill", "restart")
+    assert action is not None and action.risk.value == "external-write"
+    assert ex.lookup("drill", "deploy") is None
 
 
-def test_default_executor_satisfies_the_protocol() -> None:
-    assert isinstance(DEFAULT, ActionExecutor)
+def _allow() -> Decision:
+    return Decision(DecisionOutcome.ALLOW, PILOT, datetime.now(UTC).isoformat())
 
 
-async def test_execute_binds_target_into_argv_without_a_shell(tmp_path) -> None:
-    tf = tmp_path / "t.yaml"
-    tf.write_text(
-        "targets:\n  - name: drill\n    url: http://x\n"
-        "    restart: sh -c 'printf wedged-recovered'\n"
-    )
-    act.TARGETS_PATH = tf
-    try:
-        res = await LocalExecutor().execute("drill", "restart", principal=PILOT)
-        assert res.ok and res.argv == ("sh", "-c", "printf wedged-recovered")
-        assert "wedged-recovered" in res.output
-    finally:
-        act.TARGETS_PATH = None
+async def test_execute_runs_declared_argv_with_no_shell() -> None:
+    res = await _mex().execute("drill", "restart", principal=PILOT, decision=_allow())
+    assert res.ok and res.argv == ("printf", "recovered")
+    assert "recovered" in res.output and res.duration_ms >= 0
 
 
 async def test_execute_undeclared_action_raises() -> None:
     with pytest.raises(KeyError):
-        await LocalExecutor().execute("drill", "delete_env", principal=PILOT)
+        await _mex().execute("drill", "delete_env", principal=PILOT, decision=_allow())
 
 
-async def test_execute_failed_command_is_not_ok(tmp_path) -> None:
-    tf = tmp_path / "t.yaml"
-    tf.write_text("targets:\n  - name: drill\n    url: http://x\n    restart: sh -c 'exit 5'\n")
-    act.TARGETS_PATH = tf
-    try:
-        res = await LocalExecutor().execute("drill", "restart", principal=PILOT)
-        assert res.ok is False and "exit 5" in res.output
-    finally:
-        act.TARGETS_PATH = None
+async def test_execute_enforces_principal_scope() -> None:
+    scoped = Principal(kind=PrincipalKind.AGENT, id="pilot", role="ops", scope=("relnotes",))
+    with pytest.raises(ActionError, match="scope"):
+        await _mex().execute("drill", "restart", principal=scoped, decision=_allow())
 
 
-# --- the gate reading the manifest ------------------------------------------------
+# --- the gate reading the manifest via the executor --------------------------
 
 
-async def _decide(session, executor, *, principal=PILOT, allow=None, tool="restart"):
+async def _decide(
+    session, executor: ActionExecutor, *, principal=PILOT, allow=None, tool="restart"
+):
     rr: dict[str, str] = {}
     guard = act.make_guard(
         session,
@@ -141,13 +122,13 @@ async def test_gate_denies_action_not_in_the_manifest(session) -> None:
 
 
 async def test_gate_reads_approval_never_and_allows(session) -> None:
-    ex = FakeExecutor({"restart": _spec("restart", approval=ApprovalMode.NEVER)})
-    _out, rr, calls = await _decide(session, ex, allow=set())  # not in allow-set…
-    assert calls == ["drill"] and rr["drill"] == "allow"  # …but approval=never
+    ex = FakeExecutor({"restart": spec(approval=ApprovalMode.NEVER)})
+    _out, rr, calls = await _decide(session, ex, allow=set())
+    assert calls == ["drill"] and rr["drill"] == "allow"
 
 
 async def test_gate_reads_approval_always_and_denies(session) -> None:
-    ex = FakeExecutor({"restart": _spec("restart", approval=ApprovalMode.ALWAYS)})
+    ex = FakeExecutor({"restart": spec(approval=ApprovalMode.ALWAYS)})
     out, _rr, calls = await _decide(session, ex)
     assert out.startswith("BLOCKED:") and "requires human approval" in out
     assert calls == []
@@ -155,21 +136,18 @@ async def test_gate_reads_approval_always_and_denies(session) -> None:
 
 async def test_gate_enforces_principal_scope(session) -> None:
     scoped = Principal(kind=PrincipalKind.AGENT, id="pilot", role="ops", scope=("relnotes",))
-    ex = FakeExecutor({"restart": _spec("restart", approval=ApprovalMode.POLICY)})
-    out, _rr, calls = await _decide(session, ex, principal=scoped)
+    out, _rr, calls = await _decide(session, FakeExecutor(), principal=scoped)
     assert "scope does not include drill" in out and calls == []
 
 
 async def test_executor_result_reaches_the_audit_row(session) -> None:
-    ex = FakeExecutor(
-        {"restart": _spec("restart", approval=ApprovalMode.POLICY)},
-        result=ExecResult(False, ("sx", "restart", "drill"), "restart failed (exit 1)", 12),
-    )
+    failed = ExecutionResult(spec(), 1, "", "restart failed (exit 1)", 12)
+    ex = FakeExecutor(result=failed)
     rr: dict[str, str] = {}
     guard = act.make_guard(session, allow={"drill"}, run_result=rr, executor=ex)
 
     async def _fn(app: str) -> str:
-        """Mirrors run.tick's _restart_and_record: gate allows, executor runs, outcome audited."""
+        """Mirrors run.tick's _restart_and_record."""
         res = await ex.execute(app, "restart", principal=PILOT)
         await record(
             session,
@@ -182,6 +160,6 @@ async def test_executor_result_reaches_the_audit_row(session) -> None:
 
     _fn.__name__ = "restart"
     await guarded_tool(_fn, guard=guard).call({"app": "drill"})
-    rows = await _rows(session)
+    rows = list((await session.execute(select(Action).order_by(Action.id))).scalars().all())
     assert [r.decision for r in rows] == ["allow", "failed"]
     assert "exit 1" in rows[-1].result
