@@ -107,7 +107,7 @@ negative case: the agent reads it as an outage and declines to restart on its ow
 | 4b ✅ | **deploy / rollback proposal + human-approval wait** — `propose` a plan → incident `awaiting_approval` → after a human `sx approve`, `execute_approved`; Pilot never approves | Codex's plan store (`sconixcore` `load_record`, `sx deploy --plan` / `approve`) |
 | 4c ✅ | in the **watch loop** — `--allow-rollback` proposes a `rollback_plan` once a restart is exhausted (`should_rollback` policy); `resume_if_approved` executes it the tick a human approves | — |
 | 4d ✅ | **canary lifecycle** — `propose`/`execute_approved` generalised to `canary` / `promote` / `canary_teardown` (operator-initiated, own fresh approval each); the autonomous loop still only ever proposes `rollback` (`AUTONOMOUS_KINDS`) | Codex's `sx promote` / `sx teardown` (Systems `7e33ac6`) |
-| — ✅ | **autonomous behaviour frozen** + [`RUNBOOK.md`](RUNBOOK.md) — the F1 operator runbook | — |
+| — ✅ | **autonomous behaviour frozen** + [`RUNBOOK.md`](RUNBOOK.md) + read-only `pilot report` (states, principals, plan ids, resolutions, cost; `--json`) | — |
 | 5 | public status page | an incident/status package |
 
 ## Docs

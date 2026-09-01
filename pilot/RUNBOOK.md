@@ -199,7 +199,16 @@ into it automatically.** Consequences:
 
 ## Where to look
 
-| what | where |
+```
+task report                        # incidents, principals, plan ids, resolutions, cost
+task report -- --open              # only unresolved
+task report -- --target relnotes
+task report -- --json              # structured (agents / CI)
+```
+
+`pilot report` is strictly read-only — it never opens a write transaction.
+
+| raw source | where |
 |---|---|
 | incidents + their state, plan id, resolution | `pilot.db` → `incidents` |
 | every proposal / allow / deny / done / failed, with principal + plan id | `pilot.db` → `actions` |

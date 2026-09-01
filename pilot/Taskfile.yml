@@ -21,6 +21,11 @@ tasks:
     cmds:
       - uv run python -m pilot.demo
 
+  report:
+    desc: "read-only: incidents, principals, plan ids, resolutions, cost (-- --open | --json | --target X)"
+    cmds:
+      - uv run python -m pilot.report {{.CLI_ARGS}}
+
   test:
     cmds:
       - uv run pytest
