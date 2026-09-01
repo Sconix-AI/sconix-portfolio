@@ -80,6 +80,6 @@ async def test_gate_denies_unknown_tool(session) -> None:
     tool = guarded_tool(delete_everything, guard=guard)
 
     res = await tool.call({"app": "skillforge"})
-    assert res.startswith("BLOCKED:") and "no policy for tool" in res
+    assert res.startswith("BLOCKED:") and "undeclared action" in res
     rows = await _rows(session)
     assert rows[0].decision == "deny" and rows[0].tool == "delete_everything"

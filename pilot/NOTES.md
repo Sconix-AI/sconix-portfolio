@@ -177,3 +177,26 @@ Still felt:
 16. **`ActionSpec.argv` is a placeholder** (`("sx","restart","<app>")`); the real
     argv comes from `_restart_cmd()` (per-target override). The spec and the
     executor should share one source once `sconix.yaml` `commands` land.
+
+## Slice 4 prep — the executor seam
+
+Per Codex's lane assignment (build the seam, don't build the executor):
+
+- **`pilot/executor.py`** — `ActionExecutor` Protocol (`lookup` + `execute` →
+  `ExecResult`) and a throwaway `LocalExecutor` (one action, from `pilot.act`).
+  `DEFAULT` is the single binding slice 4 swaps for `sconixcore`'s manifest
+  executor.
+- **`act.make_guard`** now takes `executor=`; it denies **undeclared** actions
+  and branches on `spec.approval` (`never` → allow, `policy` → allow-set +
+  scope + cooldown, `always` → deny). Gate no longer special-cases
+  `"restart_app"` by string.
+- **`run.tick`** executes via `EXECUTOR.execute(...)`; **`_verify_recovered`**
+  reads `EXECUTOR.lookup("restart_app").verification`.
+- `test_executor.py` (+10): lookup, argv-no-shell, undeclared→deny/raise,
+  approval modes, principal scope, exec-result→audit. 28 tests total.
+
+Deliverable: **`PILOT_SLICE4_ADAPTER.md`** — the Protocol contract, the
+one-line swap, and what `sconixcore`'s executor must provide.
+
+Deferred to the deploy/rollback integration: stale/expired approval + one-time
+consumption tests (restart is `approval: policy`, so the gate is the approval).

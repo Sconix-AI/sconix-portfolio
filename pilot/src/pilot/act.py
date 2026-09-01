@@ -18,7 +18,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from sconixcore import (
@@ -31,6 +31,9 @@ from sconixcore import (
     Verification,
 )
 from sqlmodel import select
+
+if TYPE_CHECKING:
+    from pilot.executor import ActionExecutor
 
 from pilot.audit import Action, record
 from pilot.principal import PILOT, label
@@ -121,20 +124,35 @@ def make_guard(
     principal: Principal = PILOT,
     incidents: dict[str, int] | None = None,
     cooldown_s: int = COOLDOWN_S,
+    executor: ActionExecutor | None = None,
 ) -> Guard:
-    """Gate: allow ``restart_app`` only for a target in ``allow`` (assessed
-    warn/down this run, with --fix), the principal in scope, and no restart of
-    the same target within ``cooldown_s``. Records a `sconixcore.Decision` per
-    check; ``run_result[target]`` gets the outcome so the caller can move the
-    incident's state."""
+    """Gate for the agent's mutating tool. The action must be **declared** by the
+    executor (→ `sconix.yaml` at slice 4); its `approval` mode drives the check:
+
+    - `never`  → allowed (still audited).
+    - `policy` → Pilot's local policy: target in ``allow`` this run, principal in
+      scope, no restart within ``cooldown_s``.
+    - `always` → denied — needs a human; Pilot can't self-approve.
+
+    Records a `sconixcore.Decision` per check; ``run_result[target]`` gets the
+    outcome so the caller can move the incident's state."""
+
+    if executor is None:
+        from pilot.executor import DEFAULT as executor
 
     incidents = incidents or {}
     who = label(principal)
 
     async def _deny_reason(tool: str, target: str) -> str:
         """Empty string == allowed."""
-        if tool != "restart_app":
-            return f"no policy for tool {tool!r}"
+        spec = executor.lookup(tool)
+        if spec is None:
+            return f"undeclared action {tool!r} — not in the project manifest"
+        if spec.approval is ApprovalMode.NEVER:
+            return ""
+        if spec.approval is ApprovalMode.ALWAYS:
+            return f"{tool!r} requires human approval ({spec.risk.value})"
+        # ApprovalMode.POLICY — Pilot's local rule
         if target not in allow:
             return "not an approved target this run (healthy, or --fix not set)"
         if principal.scope and target not in principal.scope:

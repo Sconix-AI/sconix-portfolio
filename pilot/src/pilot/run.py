@@ -28,8 +28,9 @@ from sconixapp.db import dispose_engine, get_engine, get_session, init_engine
 from sqlmodel import SQLModel
 
 from pilot import act
-from pilot.act import RESTART, make_guard, restart_app
+from pilot.act import make_guard, restart_app
 from pilot.audit import record
+from pilot.executor import DEFAULT as EXECUTOR
 from pilot.memory import (
     ACTED,
     APPROVED,
@@ -161,17 +162,17 @@ async def tick(
         run_result: dict[str, str] = {}
 
         async def _restart_and_record(app: str) -> str:
-            out = await restart_app(app)
+            res = await EXECUTOR.execute("restart_app", target=app)
             await record(
                 session,
                 target=app,
                 incident_id=incidents.get(app),
                 principal=who,
                 tool="restart_app",
-                decision="failed" if out.startswith("restart failed") else "done",
-                result=out[:500],
+                decision="done" if res.ok else "failed",
+                result=res.output[:500],
             )
-            return out
+            return res.output
 
         _restart_and_record.__name__ = "restart_app"
         _restart_and_record.__doc__ = restart_app.__doc__
@@ -182,6 +183,7 @@ async def tick(
             run_result=run_result,
             principal=principal,
             incidents=incidents,
+            executor=EXECUTOR,
         )
         tool = guarded_tool(_restart_and_record, guard=guard)
         for obs, verdict, _ in assessed:
@@ -243,7 +245,7 @@ async def _open_by_target(session: Any, target: str) -> Any:
 async def _verify_recovered(target: dict, verification: Any = None) -> bool:
     """Re-probe per the action's `Verification`: up to N attempts, spaced, with a
     wall-clock cap. True on the first healthy probe."""
-    v = verification or RESTART.verification
+    v = verification or EXECUTOR.lookup("restart_app").verification
     started = time.monotonic()
     for attempt in range(v.attempts):
         if attempt:

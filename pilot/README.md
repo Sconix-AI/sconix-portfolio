@@ -98,11 +98,14 @@ negative case: the agent reads it as an outage and declines to restart on its ow
 | 3.5 ✅ | drill harness + `task demo` — down→act→cooldown-deny, end to end | (none — pilot-only) |
 | 3.7 ✅ | incident **state machine** + **verify** step + **principal** on every incident/action + confidence | (none — logged in `PILOT_REQUIREMENTS.md` for Codex to extract) |
 | 3.8 ✅ | consume `sconixcore` (`Principal` / `ActionSpec` / `Decision` / `Verification`); retry-aware verify | (none — Codex's Phase 2 contracts, now a real consumer) |
-| 4 | canary deploy + auto-rollback | `sx canary` / `sx rollback` / `deploy --plan` — **Codex's Phase 3, in progress** |
+| 3.9 ✅ | the **executor seam** — `ActionExecutor` Protocol; gate reads `approval` from the action spec, denies undeclared actions | (none — `PILOT_SLICE4_ADAPTER.md` specs the one-line swap to Codex's manifest executor) |
+| 4 | consume the manifest executor + canary deploy + auto-rollback | Codex's Phase 3 executor + `sx canary` / `rollback` / `deploy --plan` — **in progress** |
 | 5 | public status page | an incident/status package |
 
 ## For the platform
 
 - `PILOT_REQUIREMENTS.md` — the concrete "Pilot needs from Sconix" contract
-  (checkpoint artifact; pairs with the constitution / glossary / manifest schema).
-- `NOTES.md` — running friction log, items #1–13.
+  (checkpoint 1 artifact; pairs with the constitution / glossary / manifest schema).
+- `PILOT_SLICE4_ADAPTER.md` — the `ActionExecutor` seam and the one-line swap to
+  `sconixcore`'s manifest executor.
+- `NOTES.md` — running friction log, items #1–16.
