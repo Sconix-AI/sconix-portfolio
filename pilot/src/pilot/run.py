@@ -1,16 +1,17 @@
 """The loop: probe every target, assess it (with memory), and — with --fix — act.
 
-    uv run python -m pilot.run                      # one pass over every target
-    uv run python -m pilot.run relnotes             # one pass, just one
-    uv run python -m pilot.run --fix                # arm the restart action (policy-gated)
-    uv run python -m pilot.run watch --every 60     # run unattended on a loop
-    uv run python -m pilot.run watch --fix --for 900
-    uv run python -m pilot.run watch --targets drill.targets.yaml --fix   # drill
+    uv run python -m pilot.run                          # one pass over every target
+    uv run python -m pilot.run relnotes                 # one pass, just one
+    uv run python -m pilot.run --fix                    # arm restart (policy-gated)
+    uv run python -m pilot.run watch --fix --every 60   # unattended loop
+    uv run python -m pilot.run watch --fix --allow-rollback   # + propose a rollback
+                                                             #   plan once restart is
+                                                             #   exhausted (human approves)
 
-Slice 3: `watch` runs the loop unattended, and `pilot.memory` gives it an
-incident record — an app that's been down for six ticks reads differently from
-one that just blipped, and the restart gate now has a cooldown so a wedged app
-isn't restart-looped.
+`watch` runs unattended with an incident record. `restart` is policy-gated +
+cooldowned. With `--allow-rollback`, a target a restart can't fix gets a
+`rollback_plan` proposed and parked on `awaiting_approval`; Pilot executes it
+only after a human runs `sx approve`. Pilot never approves anything itself.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from sconixapp.db import dispose_engine, get_engine, get_session, init_engine
 from sconixcore import ManifestExecutor
 from sqlmodel import SQLModel
 
-from pilot import act
+from pilot import act, deploy
 from pilot.act import make_guard
 from pilot.audit import record
 from pilot.manifest import resolve_target
@@ -136,6 +137,7 @@ async def tick(
     targets: list[dict],
     do_fix: bool,
     principal: Principal = PILOT,
+    allow_rollback: bool = False,
 ) -> list[dict]:
     """One full pass: probe → assess → move each incident through its lifecycle."""
     who = label(principal)
@@ -204,6 +206,25 @@ async def tick(
             await _settle(session, incidents[obs.name], run_result.get(obs.name), by_name[obs.name])
         restarted = {n for n, r in run_result.items() if r == "allow"}
 
+    # 4c: (1) resume any parked incident a human has since approved, then
+    #     (2) for a restart that's now exhausted, propose a rollback plan.
+    if do_fix:
+        for obs, _v, _c in assessed:
+            inc = await _open_by_target(session, obs.name)
+            if inc is None:
+                continue
+            if inc.state == "awaiting_approval":
+                await deploy.resume_if_approved(
+                    session,
+                    EXECUTOR,
+                    target=obs.name,
+                    incident=inc,
+                    principal=principal,
+                    arguments=_rollback_args(by_name[obs.name]),
+                )
+            elif allow_rollback and deploy.should_rollback(inc):
+                await _propose_rollback(session, obs.name, inc, principal, by_name[obs.name])
+
     await session.commit()
     out_rows = []
     for o, v, c in assessed:
@@ -220,9 +241,41 @@ async def tick(
                 "said": said.get(o.name, ""),
                 "restarted": o.name in restarted,
                 "state": inc.state if inc else RESOLVED,
+                "plan_id": inc.plan_id if inc else None,
             }
         )
     return out_rows
+
+
+def _rollback_args(target: dict) -> dict[str, str]:
+    rb = target.get("rollback_to")
+    return {"release": str(rb)} if rb else {}
+
+
+async def _propose_rollback(
+    session: Any, name: str, inc: Any, principal: Principal, target: dict
+) -> None:
+    rb = target.get("rollback_to")
+    if not rb:
+        await transition(
+            session,
+            inc,
+            ESCALATED,
+            resolution="rollback needs a target release — set `rollback_to:` in targets.yaml",
+        )
+        return
+    try:
+        await deploy.propose(
+            session,
+            EXECUTOR,
+            target=name,
+            kind="rollback",
+            principal=principal,
+            incident=inc,
+            arguments={"release": str(rb)},
+        )
+    except RuntimeError:
+        pass  # propose already escalated + recorded the failure
 
 
 async def _reload(session: Any, incident_id: int) -> Any:
@@ -346,7 +399,9 @@ def _print_pass(rows: list[dict]) -> float:
     return total
 
 
-async def once(only: str | None, do_fix: bool, targets_path: Path) -> int:
+async def once(
+    only: str | None, do_fix: bool, targets_path: Path, allow_rollback: bool = False
+) -> int:
     act.TARGETS_PATH = targets_path
     targets = [t for t in load_targets(targets_path) if only in (None, t["name"])]
     if not targets:
@@ -355,7 +410,7 @@ async def once(only: str | None, do_fix: bool, targets_path: Path) -> int:
     client = await _client()
     session = await _open_session()
     try:
-        rows = await tick(client, session, targets, do_fix)
+        rows = await tick(client, session, targets, do_fix, allow_rollback=allow_rollback)
     finally:
         await session.rollback()
         await dispose_engine()
@@ -363,7 +418,13 @@ async def once(only: str | None, do_fix: bool, targets_path: Path) -> int:
     return 0
 
 
-async def watch(do_fix: bool, every: int, for_s: int | None, targets_path: Path) -> int:
+async def watch(
+    do_fix: bool,
+    every: int,
+    for_s: int | None,
+    targets_path: Path,
+    allow_rollback: bool = False,
+) -> int:
     act.TARGETS_PATH = targets_path
     targets = load_targets(targets_path)
     client = await _client()
@@ -373,7 +434,7 @@ async def watch(do_fix: bool, every: int, for_s: int | None, targets_path: Path)
     try:
         while True:
             n += 1
-            rows = await tick(client, session, targets, do_fix)
+            rows = await tick(client, session, targets, do_fix, allow_rollback=allow_rollback)
             stamp = time.strftime("%H:%M:%S")
             worst = max(rows, key=lambda r: ("ok", "warn", "down").index(r["severity"]))
             flags = " ".join(
@@ -399,7 +460,9 @@ async def watch(do_fix: bool, every: int, for_s: int | None, targets_path: Path)
 
 def main(argv: list[str]) -> int:
     do_fix = "--fix" in argv
-    rest = [a for a in argv if a != "--fix"]
+    allow_rollback = "--allow-rollback" in argv
+    bare = {"--fix", "--allow-rollback"}
+    rest = [a for a in argv if a not in bare]
 
     def opt(name: str, default: str) -> str:
         return rest[rest.index(name) + 1] if name in rest else default
@@ -414,9 +477,9 @@ def main(argv: list[str]) -> int:
     if positional and positional[0] == "watch":
         every = int(opt("--every", "60"))
         for_s = int(opt("--for", "0")) or None
-        return asyncio.run(watch(do_fix, every, for_s, targets_path))
+        return asyncio.run(watch(do_fix, every, for_s, targets_path, allow_rollback))
     only = positional[0] if positional else None
-    return asyncio.run(once(only, do_fix, targets_path))
+    return asyncio.run(once(only, do_fix, targets_path, allow_rollback))
 
 
 if __name__ == "__main__":

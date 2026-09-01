@@ -5,12 +5,8 @@ and, once a human has run `sx approve`, **execute** the approved action
 (`deploy` / `rollback` — `approval: always`). Pilot never approves anything.
 
 Plans, approvals, and executions live in Sconix's plan store
-(`$SCONIX_STATE_DIR/deploy/…`, read via `sconixcore.deploy`) — Pilot only
+(`$SCONIX_STATE_DIR/deploy/…`, read via `sconixcore.load_record`) — Pilot only
 records the plan id and the outcome on its own incident/audit trail.
-
-Command keys are the agent-safe snake_case names; the real app manifests adopt
-them in a Codex commit — until then this module is exercised only against a
-fake executor + a temp state dir (see `tests/test_deploy.py`).
 """
 
 from __future__ import annotations
@@ -19,10 +15,25 @@ import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sconixcore import Decision, DecisionOutcome, Principal, PrincipalKind
+from sconixcore import (
+    Decision,
+    DecisionOutcome,
+    DeployRecordError,
+    Principal,
+    PrincipalKind,
+    load_record,
+)
 
 from pilot.audit import record
-from pilot.memory import ACTED, APPROVED, AWAITING_APPROVAL, ESCALATED, transition
+from pilot.memory import (
+    ACTED,
+    APPROVED,
+    AWAITING_APPROVAL,
+    ESCALATED,
+    PROPOSED,
+    Incident,
+    transition,
+)
 
 DEPLOY_PLAN = "deploy_plan"
 ROLLBACK_PLAN = "rollback_plan"
@@ -54,8 +65,6 @@ def _principal_from(record_value: dict[str, Any]) -> Principal:
 def approval_status(plan_id: str) -> ApprovalStatus:
     """Read Sconix's plan store: has a human approved this plan, and is it still
     good for one execution?"""
-    from sconixcore.deploy import DeployRecordError, load_record
-
     try:
         load_record("approvals", plan_id)
     except DeployRecordError:
@@ -65,6 +74,19 @@ def approval_status(plan_id: str) -> ApprovalStatus:
     except DeployRecordError:
         return "approved"
     return "consumed"
+
+
+def should_rollback(incident: Incident) -> bool:
+    """When does rollback beat restart? Only once a restart has been *tried this
+    incident and failed to recover it* — i.e. it isn't a transient/wedged
+    process. A rollback is a heavier, human-approved move for a bad release."""
+    return (
+        incident.open
+        and incident.last_severity in ("warn", "down")
+        and incident.acted_at is not None  # a restart ran
+        and incident.state in (ESCALATED, "diagnosed")  # ...and didn't stick
+        and incident.plan_id is None  # no plan proposed yet
+    )
 
 
 async def propose(
@@ -80,6 +102,8 @@ async def propose(
     """Run ``<kind>_plan``, record the plan id, park the incident on
     ``awaiting_approval``. Returns the plan id."""
     plan_action = DEPLOY_PLAN if kind == "deploy" else ROLLBACK_PLAN
+    if incident.state != PROPOSED:
+        await transition(session, incident, PROPOSED)
     res = await executor.execute(target, plan_action, principal=principal, arguments=arguments)
     if not res.ok:
         await record(
@@ -110,9 +134,37 @@ async def propose(
         incident,
         AWAITING_APPROVAL,
         plan_id=plan_id,
+        plan_kind=kind,
         resolution=f"awaiting human approval — sx approve {plan_id}",
     )
     return plan_id
+
+
+async def resume_if_approved(
+    session: Any,
+    executor: Any,
+    *,
+    target: str,
+    incident: Incident,
+    principal: Principal,
+    arguments: dict[str, str] | None = None,
+) -> bool | None:
+    """For a parked incident: if a human has now approved its plan, execute it.
+    Returns `execute_approved`'s result, or None if there's nothing to do yet."""
+    if incident.state != AWAITING_APPROVAL or not incident.plan_id:
+        return None
+    if approval_status(incident.plan_id) != "approved":
+        return None
+    return await execute_approved(
+        session,
+        executor,
+        target=target,
+        kind=incident.plan_kind or "rollback",
+        plan_id=incident.plan_id,
+        principal=principal,
+        incident=incident,
+        arguments=arguments,
+    )
 
 
 async def execute_approved(

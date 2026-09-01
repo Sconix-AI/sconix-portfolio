@@ -15,9 +15,12 @@ from pilot.deploy import (
     approval_status,
     execute_approved,
     propose,
+    resume_if_approved,
+    should_rollback,
 )
 from pilot.memory import (
     ACTED,
+    APPROVED,
     AWAITING_APPROVAL,
     DIAGNOSED,
     ESCALATED,
@@ -213,6 +216,66 @@ async def test_execute_consumed_plan_escalates(session, _state_dir) -> None:
     assert ok is False
     inc = await session.get(Incident, inc.id)
     assert inc.state == ESCALATED and "consumed" in inc.resolution
+
+
+# --- the "rollback beats restart" policy -------------------------------------
+
+
+async def test_should_rollback_only_after_a_failed_restart(session) -> None:
+    inc = await observe(session, "relnotes", "down", "hard down", "ops-agent:pilot")
+    await transition(session, inc, DIAGNOSED)
+    assert should_rollback(inc) is False  # no restart tried yet
+
+    await transition(session, inc, PROPOSED)
+    await transition(session, inc, APPROVED)
+    await transition(session, inc, ACTED)  # a restart ran (acted_at set)
+    await transition(session, inc, ESCALATED, resolution="denied: already restarted")
+    assert should_rollback(inc) is True
+
+    inc.plan_id = "deadbeefdeadbeefdead"  # a plan already exists -> don't re-propose
+    assert should_rollback(inc) is False
+
+
+async def test_should_not_rollback_a_recovered_target(session) -> None:
+    inc = await _proposed_incident(session)
+    await transition(session, inc, APPROVED)
+    await transition(session, inc, ACTED)
+    await transition(session, inc, ESCALATED)
+    inc.last_severity = "ok"
+    assert should_rollback(inc) is False
+
+
+# --- resume_if_approved (what the watch loop calls each tick) ------------------
+
+
+async def test_resume_noops_while_pending(session) -> None:
+    inc = await _park(session)
+    assert (
+        await resume_if_approved(
+            session, DeployExecutor(), target="relnotes", incident=inc, principal=_pilot()
+        )
+        is None
+    )
+
+
+async def test_resume_executes_once_approved(session, _state_dir) -> None:
+    inc = await _park(session)
+    inc.plan_kind = "rollback"
+    _write(_state_dir, "approvals", PLAN_ID, _approval())
+    ex = DeployExecutor()
+    result = await resume_if_approved(
+        session,
+        ex,
+        target="relnotes",
+        incident=inc,
+        principal=_pilot(),
+        arguments={"release": "v1.2.2"},
+    )
+    assert result is True
+    call = [c for c in ex.calls if c[1] == "rollback"][0]
+    assert call[2] == {"plan_id": PLAN_ID, "release": "v1.2.2"}
+    inc = await session.get(Incident, inc.id)
+    assert inc.state == ACTED
 
 
 # --- helpers ------------------------------------------------------------------

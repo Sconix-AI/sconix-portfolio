@@ -50,7 +50,7 @@ _ALLOWED: dict[str, set[str]] = {
     APPROVED: {ACTED, ESCALATED},
     ACTED: {VERIFIED, ESCALATED, DIAGNOSED},  # DIAGNOSED = still bad next tick
     VERIFIED: {RESOLVED},
-    ESCALATED: {DIAGNOSED, RESOLVED},
+    ESCALATED: {DIAGNOSED, PROPOSED, RESOLVED},  # PROPOSED = pilot proposes a rollback plan
 }
 
 
@@ -85,6 +85,7 @@ class Incident(SQLModel, table=True):
     confidence: float | None = None
     resolution: str = ""
     plan_id: str | None = Field(default=None, index=True)  # a deploy/rollback plan, if any
+    plan_kind: str | None = None  # "deploy" | "rollback"
 
     @property
     def open(self) -> bool:

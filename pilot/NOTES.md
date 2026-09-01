@@ -239,12 +239,27 @@ gains **`awaiting_approval`** (`proposed → awaiting_approval → approved`);
 - Canary held — shared edge aliases make parallel canaries unsafe until Codex
   ships release-scoped aliases.
 
+## Slice 4c — deploy/rollback in the watch loop
+
+- **`deploy.should_rollback(incident)`** — rollback only after a `restart` ran
+  this incident and failed to recover it. Never the first move.
+- **`deploy.resume_if_approved`** — each tick, for an `awaiting_approval`
+  incident: if a human approval now exists in the plan store, run
+  `execute_approved`. No-op (no audit spam) while pending.
+- **`tick(..., allow_rollback=)`** + **`--allow-rollback`** CLI flag (off by
+  default). `targets.yaml` gains optional `rollback_to:` (the release to roll
+  back to); missing → escalate with a clear message.
+- `sconixcore` imports moved to the public `load_record` / `DeployRecordError`
+  (Codex `62857f8`). 36 tests.
+
 Still felt:
 
 17. **`RESTART` ActionSpec in `pilot/act.py` is now only used for its `.name`.**
-    The real contract lives in the manifest.
-18. **`resolve_target` re-reads `targets.yaml` on every call.** Fine at this
-    scale; cache on mtime if the fleet grows.
-19. **No watch-loop trigger for deploy/rollback yet (slice 4c).** `propose` /
-    `execute_approved` are a library; nothing decides *when* rollback beats
-    restart, or polls `awaiting_approval` incidents for a fresh approval.
+18. **`resolve_target` re-reads `targets.yaml` on every call.** Cache on mtime
+    if the fleet grows.
+19. **`rollback_to` is a static hint.** Real last-known-good release discovery
+    (from the plan store's `completions`, or the ledger) is a later refinement.
+20. **`should_rollback` never fires from a plain `escalated` if a restart was
+    *denied before it ever ran`** (`acted_at` is None) — intentional (don't
+    rollback if the cheap fix was never tried), but worth a second look with a
+    real failure.

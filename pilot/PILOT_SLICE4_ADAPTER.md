@@ -117,6 +117,22 @@ Tests: `tests/test_deploy.py`, temp `SCONIX_STATE_DIR`, fake executor — never 
 live server. Covers propose → park, status transitions, denied-while-pending,
 runs-when-approved, consumed → escalate, failed plan → escalate.
 
-**Not yet:** the watch loop has no policy for *when* to propose a deploy/rollback
-(vs. a restart) — that's slice 4c. **Canary is blocked** pending Codex's
-release-scoped aliases.
+## Slice 4c — in the watch loop
+
+`pilot watch --fix --allow-rollback`:
+
+- **`deploy.should_rollback(incident)`** — the policy. True only once a `restart`
+  has *run this incident and failed to recover it* (`acted_at` set, still
+  `warn`/`down`, state `escalated`/`diagnosed`, no plan yet). Rollback is the
+  heavier, human-approved move for a bad release — never the first response.
+- Each tick, after the restart step: `tick()` (1) calls
+  `deploy.resume_if_approved` for any incident on `awaiting_approval` — executes
+  it the moment a human's `sx approve` lands in the plan store; (2) with
+  `--allow-rollback`, calls `deploy.propose(kind="rollback")` for a target that
+  `should_rollback`, using `rollback_to:` from `targets.yaml` (missing → escalate
+  with a clear message).
+- `--allow-rollback` is off by default — like `--fix`, arming autonomous
+  proposals is explicit.
+
+**Canary is blocked** — `canary_plan` / `canary` exist but Pilot must not promote
+or switch production traffic; waiting on Codex's release-scoped aliases.
