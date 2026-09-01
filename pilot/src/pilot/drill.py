@@ -77,13 +77,24 @@ def _poke(port: int, mode: str) -> None:
         print(json.load(r))
 
 
+def _fake_plan_id(port: int) -> str:
+    import hashlib
+
+    return hashlib.sha256(f"drill-plan:{port}".encode()).hexdigest()[:20]
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="pilot.drill")
-    p.add_argument("action", choices=["serve", "down", "wedged", "degraded", "heal", "healthy"])
+    p.add_argument(
+        "action",
+        choices=["serve", "down", "wedged", "degraded", "heal", "healthy", "plan"],
+    )
     p.add_argument("--port", type=int, default=8765)
     ns = p.parse_args(argv)
     if ns.action == "serve":
         _serve(ns.port)
+    elif ns.action == "plan":
+        print(f"created drill plan {_fake_plan_id(ns.port)}")  # stands in for `sx ... --plan`
     else:
         _poke(ns.port, ns.action)
     return 0

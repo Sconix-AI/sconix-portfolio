@@ -17,3 +17,18 @@ commands:
     sideEffects: [reset the drill server to healthy]
     preconditions: [target is unhealthy, restart cooldown is clear]
     verify: {checks: [healthz, readyz], withinSeconds: 10, attempts: 3, intervalSeconds: 1}
+  # deploy/rollback: for exercising the human-approval flow against the drill.
+  # Every apply action just heals the server — enough to drive the state machine.
+  rollback_plan:
+    run: [python, -m, pilot.drill, plan, --port, "8765"]
+    arguments: [release]
+    risk: local-write
+    approval: never
+    verify: {checks: [exit-zero]}
+  rollback:
+    run: [python, -m, pilot.drill, heal, --port, "8765"]
+    arguments: [release, plan_id]
+    risk: external-write
+    approval: always
+    sideEffects: [restore the previous drill state]
+    verify: {checks: [healthz, readyz], withinSeconds: 10, attempts: 3, intervalSeconds: 1}

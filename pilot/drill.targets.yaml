@@ -7,3 +7,4 @@ targets:
     url: http://127.0.0.1:8765
     manifest: drill.sconix.yaml
     root: .
+    rollback_to: drill-prev  # so `watch --allow-rollback` has a target release

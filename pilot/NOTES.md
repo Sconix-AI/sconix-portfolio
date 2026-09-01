@@ -290,3 +290,21 @@ Still felt:
 22. **Canary data is isolated** (Codex's note) — Pilot's diagnosis/messaging
     should say a canary does *not* carry production DB state; not yet reflected
     in any prompt.
+
+## Post-freeze — operator report + integration tests
+
+Codex's factory-readiness split: Pilot's lane is the report/runbook + integration
+tests, autonomous behaviour frozen.
+
+- **`pilot report`** (`pilot/report.py`, `task report`) — read-only history:
+  incident states, principals, plan ids, resolutions, outcomes, per-target +
+  total agent cost. `--open` / `--target` / `--limit` / `--json` / `--db`. A test
+  asserts it opens no write txn (row counts unchanged, session stays clean).
+- **`tests/test_integration.py`** — full chain, no live server, no LLM: real
+  `ManifestExecutor` → a real drill `sconix.yaml` → a real `python -m pilot.drill`
+  subprocess → the verify loop → the incident state machine → the plan store →
+  `pilot report`. Covers restart→resolve, cooldown→escalate, and
+  rollback-propose → human-approval → execute. The drill manifest
+  (`drill.sconix.yaml`) + `drill plan` grew a `rollback_plan`/`rollback` pair so
+  the human-approval flow is exercisable offline.
+- 45 tests.
