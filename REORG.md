@@ -69,7 +69,7 @@ no API keys, `.env`, SOPS age key, or private keys in tracked files or history.
 
 GitHub org names are global. Check a candidate is free, then create it in the
 browser (`github.com/organizations/plan` → Free) — `gh` can't create orgs.
-Candidates: `sconix`, `sconix-dev`, `getsconix`, `sconixhq`, `usesconix`.
+Candidates: `sconix`, `Sconix-AI`, `getsconix`, `sconixhq`, `usesconix`.
 
 ```bash
 gh api orgs/sconix --silent 2>/dev/null && echo "taken" || echo "sconix is free"
@@ -78,7 +78,7 @@ gh api orgs/sconix --silent 2>/dev/null && echo "taken" || echo "sconix is free"
 Set `ORG` once you've made it:
 
 ```bash
-ORG=sconix-dev   # <- your org
+ORG=Sconix-AI   # <- your org
 ```
 
 ### 3b. Move the Sconix repos into the org
@@ -145,7 +145,7 @@ gh repo create $ORG/pilot --private --source ~/pilot-export --remote origin --pu
 
 | file | goes to |
 |---|---|
-| `reorg-readmes/profile-README.md` | `YusufRM/YusufRM/README.md` — fill in email/LinkedIn; sed `sconix-dev` → your org |
+| `reorg-readmes/profile-README.md` | `YusufRM/YusufRM/README.md` — fill in email/LinkedIn; sed `Sconix-AI` → your org |
 | `README.md` (this repo, already rewritten) | `sconix-portfolio` index |
 | `reorg-readmes/sconix-systems-README.md` | `sconix-systems/README.md` (has none today) |
 | `reorg-readmes/vllm-explore-README.md` | `vllm-explore/README.md` (replace) |

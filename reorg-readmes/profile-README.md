@@ -10,9 +10,9 @@ GPUs under them fast and cheap.
 
 | | |
 |---|---|
-| **[pilot](https://github.com/sconix-dev/pilot)** | an autonomous ops agent that watches a live fleet, diagnoses failures, restarts under policy, proposes a rollback when a restart can't fix it, and executes it only after a human approves — nothing mutating happens off the leash. 45 tests, an operator runbook, full-chain integration tests. |
-| **[sconix-systems](https://github.com/sconix-dev/sconix-systems)** | the platform: a versioned project manifest, typed actions with risk/approval/verification, immutable releases, plan→approve→deploy→canary→promote→rollback→teardown, many apps on one €6.50/mo box behind a shared TLS edge. |
-| **[sconix-research](https://github.com/sconix-dev/sconix-research)** · **[vllm-explore](https://github.com/sconix-dev/vllm-explore)** | the research engine + RTX 5090 inference benchmarks — batched-decode throughput, batch-size knees, cold vs. warm start, working-set memory. |
+| **[pilot](https://github.com/Sconix-AI/pilot)** | an autonomous ops agent that watches a live fleet, diagnoses failures, restarts under policy, proposes a rollback when a restart can't fix it, and executes it only after a human approves — nothing mutating happens off the leash. 45 tests, an operator runbook, full-chain integration tests. |
+| **[sconix-systems](https://github.com/Sconix-AI/sconix-systems)** | the platform: a versioned project manifest, typed actions with risk/approval/verification, immutable releases, plan→approve→deploy→canary→promote→rollback→teardown, many apps on one €6.50/mo box behind a shared TLS edge. |
+| **[sconix-research](https://github.com/Sconix-AI/sconix-research)** · **[vllm-explore](https://github.com/Sconix-AI/vllm-explore)** | the research engine + RTX 5090 inference benchmarks — batched-decode throughput, batch-size knees, cold vs. warm start, working-set memory. |
 
 Three real SaaS apps shipped on it (auth, Stripe billing, an in-product agent),
 each deployed with TLS, Postgres, Redis, and migrations.

@@ -6,7 +6,7 @@
 does an RTX 5090 (WSL2) give you?
 
 A reproducible benchmark project on the [Sconix research
-engine](https://github.com/sconix-dev/sconix-research): every run records its
+engine](https://github.com/Sconix-AI/sconix-research): every run records its
 resolved config, git SHA + diff, `pip freeze`, GPU info, and per-step metrics
 into `results/<timestamp>__<name>__<sha>/`.
 

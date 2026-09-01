@@ -58,4 +58,4 @@ each became a test.
 | `apps/` | generated apps (git-ignored) |
 
 The agent that operates apps built with this lives in a separate repo:
-**[pilot](https://github.com/sconix-dev/pilot)**.
+**[pilot](https://github.com/Sconix-AI/pilot)**.
